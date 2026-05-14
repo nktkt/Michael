@@ -1184,6 +1184,7 @@ dependencies = [
  "jni",
  "thiserror",
  "tomcatrs-core",
+ "tomcatrs-coyote",
  "tracing",
 ]
 

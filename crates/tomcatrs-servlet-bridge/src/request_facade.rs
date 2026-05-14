@@ -4,7 +4,7 @@
 //!
 //! When the connector parses an HTTP request it builds a [`RequestParts`] and
 //! wraps it in a [`RequestHandle`]. The handle is given a process-unique
-//! [`RequestHandle::id`] (`nativeRequestId`). Only that `u64` crosses the JNI
+//! [`RequestHandle::id`] (`nativeRequestId`). Only that integer crosses the JNI
 //! boundary.
 //!
 //! On the JVM side, `org.apache.tomcatrs.bridge.TomcatRsRequestFacade`
@@ -17,6 +17,23 @@
 //!
 //! This means a servlet that only reads two headers causes exactly two JNI
 //! round trips for headers — not a bulk copy of the entire request.
+//!
+//! # Public surface
+//!
+//! Two shapes of accessor coexist on [`RequestHandle`], on purpose:
+//!
+//! * **Rust-ergonomic** — [`RequestHandle::id`] (`u64`),
+//!   [`RequestHandle::read_body`] (returns [`Bytes`]). These are what the
+//!   existing [`crate::jni`] glue and [`crate::async_servlet`] are written
+//!   against.
+//! * **JNI-shaped** — [`RequestHandle::native_id`] (`i64`, the literal `jlong`
+//!   the Java facade stores), [`RequestHandle::read_body_into`] (fills a caller
+//!   `&mut [u8]` and returns a `usize` count, mirroring
+//!   `ServletInputStream.read(byte[])`). These are what the
+//!   [`crate::invoker::JvmServletInvoker`] marshalling layer uses.
+//!
+//! Both views address the *same* underlying state; they are kept separate only
+//! so neither caller has to convert at every call site.
 //!
 //! # Java facade classes
 //!
@@ -74,11 +91,25 @@ impl RequestParts {
             .find(|(k, _)| k.eq_ignore_ascii_case(name))
             .map(|(_, v)| v.as_str())
     }
+
+    /// All header names, in arrival order (original casing preserved).
+    ///
+    /// Backs the Java `HttpServletRequest.getHeaderNames()` enumeration.
+    pub fn header_names(&self) -> Vec<String> {
+        self.headers.iter().map(|(k, _)| k.clone()).collect()
+    }
+
+    /// The value of the `Content-Length` header parsed as a `u64`, if present
+    /// and well-formed.
+    pub fn content_length(&self) -> Option<u64> {
+        self.header("content-length")
+            .and_then(|v| v.trim().parse().ok())
+    }
 }
 
 /// The streaming request body, surfaced to Java as a `ServletInputStream`.
 ///
-/// In v0.1.0 the body is modelled as a buffered [`Bytes`] cursor: the
+/// In v1.0.0 the body is modelled as a buffered [`Bytes`] cursor: the
 /// connector may hand over an already-read body, or none. The type is
 /// deliberately an `enum` so the `jvm` feature can later add a truly streaming
 /// variant (an async reader pumped by the worker pool) without changing the
@@ -98,6 +129,28 @@ pub enum RequestBody {
 }
 
 impl RequestBody {
+    /// Build a buffered body from anything convertible into [`Bytes`], with the
+    /// read cursor at the start.
+    pub fn buffered(data: impl Into<Bytes>) -> Self {
+        RequestBody::Buffered {
+            data: data.into(),
+            position: 0,
+        }
+    }
+
+    /// Total length of the body, regardless of how much has been consumed.
+    pub fn len(&self) -> usize {
+        match self {
+            RequestBody::Empty => 0,
+            RequestBody::Buffered { data, .. } => data.len(),
+        }
+    }
+
+    /// Whether the body carries no bytes at all.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Bytes not yet consumed.
     pub fn remaining(&self) -> usize {
         match self {
@@ -119,6 +172,16 @@ impl RequestBody {
                 data.slice(start..end)
             }
         }
+    }
+
+    /// Read into a caller-provided buffer, advancing the cursor. Returns the
+    /// number of bytes copied — `0` at end-of-stream — exactly like
+    /// `java.io.InputStream.read(byte[])` (modulo the `-1` sentinel, which the
+    /// JNI glue substitutes).
+    pub fn read_into(&mut self, buf: &mut [u8]) -> usize {
+        let chunk = self.read(buf.len());
+        buf[..chunk.len()].copy_from_slice(&chunk);
+        chunk.len()
     }
 }
 
@@ -166,14 +229,82 @@ impl RequestHandle {
         }
     }
 
+    /// Build a [`RequestHandle`] from a connector-produced
+    /// [`tomcatrs_coyote::Request`].
+    ///
+    /// This is the canonical entry point for the [`crate::invoker`] layer: the
+    /// connector parses the wire request once, and this copies the eagerly
+    /// available metadata into a [`RequestParts`] while the body is moved in as
+    /// a buffered [`RequestBody`] cursor (the `Bytes` clone is cheap — it is
+    /// reference-counted, not copied).
+    ///
+    /// The handle receives a fresh, process-unique `nativeRequestId`.
+    pub fn from_coyote(req: &tomcatrs_coyote::Request) -> Self {
+        let scheme = req
+            .header("x-forwarded-proto")
+            .map(str::to_owned)
+            .unwrap_or_else(|| "http".to_string());
+        let parts = RequestParts {
+            method: req.method.clone(),
+            uri: req.uri.clone(),
+            query: req.query.clone(),
+            protocol: req.version.clone(),
+            headers: req.headers.clone(),
+            remote_addr: req.peer_addr.to_string(),
+            scheme,
+        };
+        let body = if req.body.is_empty() {
+            RequestBody::Empty
+        } else {
+            RequestBody::buffered(req.body.clone())
+        };
+        Self::with_body(parts, body)
+    }
+
     /// The opaque `nativeRequestId` — the only value that crosses JNI.
     pub fn id(&self) -> u64 {
         self.inner.id
     }
 
+    /// The `nativeRequestId` as the `jlong` (`i64`) the Java facade actually
+    /// stores. Convenience for the JNI / invoker marshalling layer.
+    pub fn native_id(&self) -> i64 {
+        self.inner.id as i64
+    }
+
     /// The eagerly-parsed request metadata.
     pub fn parts(&self) -> &RequestParts {
         &self.inner.parts
+    }
+
+    /// HTTP method, upper-cased (`GET`, `POST`, …).
+    pub fn method(&self) -> &str {
+        &self.inner.parts.method
+    }
+
+    /// Request URI including the context path, excluding the query string.
+    pub fn request_uri(&self) -> &str {
+        &self.inner.parts.uri
+    }
+
+    /// Raw query string (without the leading `?`), if any.
+    pub fn query_string(&self) -> Option<&str> {
+        self.inner.parts.query.as_deref()
+    }
+
+    /// HTTP protocol token, e.g. `HTTP/1.1`.
+    pub fn protocol(&self) -> &str {
+        &self.inner.parts.protocol
+    }
+
+    /// Connector-derived scheme (`http` / `https`).
+    pub fn scheme(&self) -> &str {
+        &self.inner.parts.scheme
+    }
+
+    /// Remote peer address as a string, e.g. `203.0.113.7:54321`.
+    pub fn remote_addr(&self) -> &str {
+        &self.inner.parts.remote_addr
     }
 
     /// Case-insensitive header lookup. The Java `nativeGetHeader` glue calls
@@ -182,14 +313,41 @@ impl RequestHandle {
         self.inner.parts.header(name)
     }
 
+    /// All header names, in arrival order. Backs `getHeaderNames()`.
+    pub fn header_names(&self) -> Vec<String> {
+        self.inner.parts.header_names()
+    }
+
+    /// Value of the `Content-Length` header as a `u64`, if present and valid.
+    pub fn content_length(&self) -> Option<u64> {
+        self.inner.parts.content_length()
+    }
+
     /// Read up to `max` more body bytes (the Rust side of
     /// `ServletInputStream.read`). Returns an empty slice at end-of-stream.
+    ///
+    /// This [`Bytes`]-returning shape is what the existing [`crate::jni`] glue
+    /// is written against; [`RequestHandle::read_body_into`] is the
+    /// caller-buffer variant used by the invoker.
     pub fn read_body(&self, max: usize) -> Bytes {
         self.inner
             .body
             .lock()
             .expect("request body mutex poisoned")
             .read(max)
+    }
+
+    /// Read body bytes into a caller-provided buffer, returning the number of
+    /// bytes copied (`0` at end-of-stream).
+    ///
+    /// This mirrors `java.io.InputStream.read(byte[])` and is the streaming
+    /// primitive the JNI / invoker layer drives the request body with.
+    pub fn read_body_into(&self, buf: &mut [u8]) -> usize {
+        self.inner
+            .body
+            .lock()
+            .expect("request body mutex poisoned")
+            .read_into(buf)
     }
 
     /// Bytes of request body not yet consumed.
@@ -227,12 +385,31 @@ impl RequestHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::SocketAddr;
+
+    fn coyote_request() -> tomcatrs_coyote::Request {
+        tomcatrs_coyote::Request {
+            method: "POST".into(),
+            uri: "/app/submit?id=7".into(),
+            path: "/app/submit".into(),
+            query: Some("id=7".into()),
+            version: "HTTP/1.1".into(),
+            headers: vec![
+                ("Host".into(), "localhost".into()),
+                ("Content-Type".into(), "text/plain".into()),
+                ("Content-Length".into(), "11".into()),
+            ],
+            body: Bytes::from_static(b"hello world"),
+            peer_addr: "203.0.113.7:54321".parse::<SocketAddr>().unwrap(),
+        }
+    }
 
     #[test]
     fn ids_are_unique_and_monotonic() {
         let a = RequestHandle::new(RequestParts::default());
         let b = RequestHandle::new(RequestParts::default());
         assert!(b.id() > a.id());
+        assert_eq!(a.native_id(), a.id() as i64);
     }
 
     #[test]
@@ -263,6 +440,24 @@ mod tests {
     }
 
     #[test]
+    fn read_body_into_streams_correctly() {
+        let req = RequestHandle::with_body(
+            RequestParts::default(),
+            RequestBody::buffered(Bytes::from_static(b"abcdefgh")),
+        );
+        let mut buf = [0u8; 3];
+        assert_eq!(req.read_body_into(&mut buf), 3);
+        assert_eq!(&buf, b"abc");
+        assert_eq!(req.read_body_into(&mut buf), 3);
+        assert_eq!(&buf, b"def");
+        // Final short read: only two bytes left.
+        assert_eq!(req.read_body_into(&mut buf), 2);
+        assert_eq!(&buf[..2], b"gh");
+        // End of stream.
+        assert_eq!(req.read_body_into(&mut buf), 0);
+    }
+
+    #[test]
     fn attributes_round_trip() {
         let req = RequestHandle::new(RequestParts::default());
         assert_eq!(req.attribute("k"), None);
@@ -286,5 +481,37 @@ mod tests {
         assert_eq!(req.id(), clone.id());
         req.set_attribute("shared", "yes");
         assert_eq!(clone.attribute("shared").as_deref(), Some("yes"));
+    }
+
+    #[test]
+    fn from_coyote_round_trips_metadata_and_body() {
+        let req = RequestHandle::from_coyote(&coyote_request());
+
+        assert_eq!(req.method(), "POST");
+        assert_eq!(req.request_uri(), "/app/submit?id=7");
+        assert_eq!(req.query_string(), Some("id=7"));
+        assert_eq!(req.protocol(), "HTTP/1.1");
+        assert_eq!(req.remote_addr(), "203.0.113.7:54321");
+        assert_eq!(req.scheme(), "http");
+
+        // Headers survive with case-insensitive lookup.
+        assert_eq!(req.header("host"), Some("localhost"));
+        assert_eq!(req.header("CONTENT-TYPE"), Some("text/plain"));
+        assert_eq!(req.content_length(), Some(11));
+        assert_eq!(req.header_names().len(), 3);
+
+        // Body round-trips and streams.
+        assert_eq!(req.body_remaining(), 11);
+        assert_eq!(&req.read_body(11)[..], b"hello world");
+        assert_eq!(req.body_remaining(), 0);
+    }
+
+    #[test]
+    fn from_coyote_empty_body_is_empty() {
+        let mut raw = coyote_request();
+        raw.body = Bytes::new();
+        let req = RequestHandle::from_coyote(&raw);
+        assert_eq!(req.body_remaining(), 0);
+        assert!(req.read_body(8).is_empty());
     }
 }

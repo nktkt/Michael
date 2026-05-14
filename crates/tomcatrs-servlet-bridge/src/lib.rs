@@ -79,13 +79,19 @@
 #![warn(missing_docs)]
 
 pub mod async_servlet;
+pub mod classloader;
+pub mod dispatch;
+pub mod invoker;
 pub mod jni;
 pub mod jvm;
 pub mod request_facade;
 pub mod response_facade;
 
 pub use async_servlet::{AsyncContextState, AsyncState};
-pub use jvm::{JvmConfig, JvmRuntime};
+pub use classloader::{ClassLoaderFactory, WebappClassLoaderConfig};
+pub use dispatch::{BridgeAdapter, ServletDispatch};
+pub use invoker::JvmServletInvoker;
+pub use jvm::{JvmConfig, JvmRuntime, WebappRuntime};
 pub use request_facade::RequestHandle;
 pub use response_facade::ResponseHandle;
 

@@ -15,6 +15,16 @@
 //! `native` calls that mutate the Rust sink, and become immutable once the
 //! response is *committed* (the first body flush, or an explicit `flushBuffer`).
 //!
+//! # Reading the response back
+//!
+//! Once the invoker returns, the connector needs the finished response. Three
+//! shapes are offered, all reading the same underlying state:
+//!
+//! * [`ResponseHandle::snapshot`] / [`ResponseSink::snapshot`] — an immutable
+//!   [`ResponseSnapshot`] copy (status, headers, body, committed flag).
+//! * [`ResponseHandle::into_coyote`] — consume the handle and produce a
+//!   [`tomcatrs_coyote::Response`] ready to serialize onto the wire.
+//!
 //! # Java facade classes
 //!
 //! Compiled into [`crate::BRIDGE_JAR_NAME`]:
@@ -32,6 +42,10 @@ use std::sync::{Arc, Mutex};
 
 /// Monotonic source of `nativeResponseId` values.
 static NEXT_RESPONSE_ID: AtomicU64 = AtomicU64::new(1);
+
+/// The HTTP status a [`ResponseHandle`] reports until a servlet sets one
+/// explicitly, matching the Servlet spec default.
+pub const DEFAULT_STATUS: u16 = 200;
 
 /// The mutable Rust-side accumulator behind a [`ResponseHandle`].
 ///
@@ -69,6 +83,14 @@ pub struct ResponseSnapshot {
     pub body: Vec<u8>,
     /// Whether the response has been committed.
     pub committed: bool,
+}
+
+impl ResponseSnapshot {
+    /// The effective status code: the explicitly-set one, or
+    /// [`DEFAULT_STATUS`] if the servlet never set one.
+    pub fn effective_status(&self) -> u16 {
+        self.status.unwrap_or(DEFAULT_STATUS)
+    }
 }
 
 impl ResponseSink {
@@ -119,6 +141,12 @@ impl ResponseHandle {
         self.id
     }
 
+    /// The `nativeResponseId` as the `jlong` (`i64`) the Java facade actually
+    /// stores. Convenience for the JNI / invoker marshalling layer.
+    pub fn native_id(&self) -> i64 {
+        self.id as i64
+    }
+
     /// A cloneable observer the connector keeps to read the final response.
     pub fn sink_handle(&self) -> ResponseSink {
         ResponseSink {
@@ -133,6 +161,21 @@ impl ResponseHandle {
         if !s.committed {
             s.status = Some(status);
         }
+    }
+
+    /// The explicitly-set status code, or `None` if a servlet never set one.
+    /// Use [`ResponseHandle::effective_status`] for the wire value.
+    pub fn status(&self) -> Option<u16> {
+        self.state
+            .lock()
+            .expect("response state mutex poisoned")
+            .status
+    }
+
+    /// The effective status code: the explicitly-set one, or
+    /// [`DEFAULT_STATUS`] if none was set.
+    pub fn effective_status(&self) -> u16 {
+        self.status().unwrap_or(DEFAULT_STATUS)
     }
 
     /// Append (or, if already present, replace) a response header. Ignored if
@@ -165,6 +208,15 @@ impl ResponseHandle {
         }
     }
 
+    /// Case-insensitive lookup of the first value set for `name`.
+    pub fn header(&self, name: &str) -> Option<String> {
+        let s = self.state.lock().expect("response state mutex poisoned");
+        s.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.clone())
+    }
+
     /// Append body bytes — the Rust side of `ServletOutputStream.write`.
     /// Writing body bytes does *not* itself commit the response in this model;
     /// the connector decides when to flush. Bytes written after an explicit
@@ -175,6 +227,25 @@ impl ResponseHandle {
         s.body.extend_from_slice(bytes);
     }
 
+    /// Number of body bytes accumulated so far.
+    pub fn body_len(&self) -> usize {
+        self.state
+            .lock()
+            .expect("response state mutex poisoned")
+            .body
+            .len()
+    }
+
+    /// Flush the response: the Rust side of `ServletResponse.flushBuffer`.
+    ///
+    /// In the v1.0.0 buffered model "flushing" simply commits the status line
+    /// and headers (there is no incremental wire write yet); it is therefore an
+    /// alias for [`ResponseHandle::commit`] kept under the Servlet-API name so
+    /// the Java facade reads naturally. Idempotent.
+    pub fn flush(&self) -> bool {
+        self.commit()
+    }
+
     /// Commit the response: freeze the status line and headers. Idempotent.
     /// Returns the committed flag (always `true` afterwards), mirroring what
     /// the connector reports in [`crate::InvocationResult`].
@@ -182,9 +253,20 @@ impl ResponseHandle {
         let mut s = self.state.lock().expect("response state mutex poisoned");
         s.committed = true;
         if s.status.is_none() {
-            s.status = Some(200);
+            s.status = Some(DEFAULT_STATUS);
         }
         true
+    }
+
+    /// Finish the response: commit it (if not already) and return the resulting
+    /// [`InvocationResult`](crate::InvocationResult)-shaped pair via a
+    /// [`ResponseSnapshot`].
+    ///
+    /// This is the natural "the servlet returned, wrap things up" call for the
+    /// [`crate::invoker`] layer.
+    pub fn complete(&self) -> ResponseSnapshot {
+        self.commit();
+        self.snapshot()
     }
 
     /// Whether the response has been committed.
@@ -193,6 +275,41 @@ impl ResponseHandle {
             .lock()
             .expect("response state mutex poisoned")
             .committed
+    }
+
+    /// Take an immutable snapshot of the current state without consuming the
+    /// handle.
+    pub fn snapshot(&self) -> ResponseSnapshot {
+        self.sink_handle().snapshot()
+    }
+
+    /// Consume the handle and marshal it into a connector-ready
+    /// [`tomcatrs_coyote::Response`].
+    ///
+    /// The status is the [`ResponseHandle::effective_status`] (defaulting to
+    /// [`DEFAULT_STATUS`]); headers and body are moved across. This is the
+    /// counterpart of [`crate::request_facade::RequestHandle::from_coyote`] and
+    /// completes the round trip the [`crate::invoker`] layer performs.
+    pub fn into_coyote(self) -> tomcatrs_coyote::Response {
+        // If other clones of the handle still exist, fall back to cloning the
+        // state rather than panicking on `Arc::try_unwrap`.
+        let state = match Arc::try_unwrap(self.state) {
+            Ok(mutex) => mutex.into_inner().expect("response state mutex poisoned"),
+            Err(shared) => {
+                let guard = shared.lock().expect("response state mutex poisoned");
+                ResponseState {
+                    status: guard.status,
+                    headers: guard.headers.clone(),
+                    body: guard.body.clone(),
+                    committed: guard.committed,
+                }
+            }
+        };
+        tomcatrs_coyote::Response {
+            status: state.status.unwrap_or(DEFAULT_STATUS),
+            headers: state.headers,
+            body: bytes::Bytes::from(state.body),
+        }
     }
 }
 
@@ -211,6 +328,7 @@ mod tests {
         let a = ResponseHandle::new();
         let b = ResponseHandle::new();
         assert_ne!(a.id(), b.id());
+        assert_eq!(a.native_id(), a.id() as i64);
     }
 
     #[test]
@@ -236,6 +354,7 @@ mod tests {
         let x_a: Vec<_> = snap.headers.iter().filter(|(k, _)| k == "X-A").collect();
         assert_eq!(x_a.len(), 1);
         assert_eq!(x_a[0].1, "2");
+        assert_eq!(resp.header("x-a").as_deref(), Some("2"));
         let cookies: Vec<_> = snap
             .headers
             .iter()
@@ -270,5 +389,70 @@ mod tests {
         resp.commit();
         resp.write_body(b"streamed");
         assert_eq!(resp.sink_handle().snapshot().body, b"streamed");
+    }
+
+    #[test]
+    fn flush_is_commit() {
+        let resp = ResponseHandle::new();
+        assert!(!resp.is_committed());
+        assert!(resp.flush());
+        assert!(resp.is_committed());
+    }
+
+    #[test]
+    fn effective_status_defaults_without_explicit_set() {
+        let resp = ResponseHandle::new();
+        assert_eq!(resp.status(), None);
+        assert_eq!(resp.effective_status(), DEFAULT_STATUS);
+        resp.set_status(503);
+        assert_eq!(resp.effective_status(), 503);
+    }
+
+    #[test]
+    fn complete_commits_and_snapshots() {
+        let resp = ResponseHandle::new();
+        resp.set_status(202);
+        resp.write_body(b"accepted");
+        let snap = resp.complete();
+        assert!(snap.committed);
+        assert_eq!(snap.status, Some(202));
+        assert_eq!(snap.body, b"accepted");
+    }
+
+    #[test]
+    fn into_coyote_marshals_status_headers_body() {
+        let resp = ResponseHandle::new();
+        resp.set_status(418);
+        resp.set_header("Content-Type", "text/plain");
+        resp.add_header("X-Trace", "abc");
+        resp.write_body(b"i am a teapot");
+
+        let coyote = resp.into_coyote();
+        assert_eq!(coyote.status, 418);
+        assert_eq!(coyote.header("content-type"), Some("text/plain"));
+        assert_eq!(coyote.header("x-trace"), Some("abc"));
+        assert_eq!(&coyote.body[..], b"i am a teapot");
+    }
+
+    #[test]
+    fn into_coyote_defaults_status_when_unset() {
+        let resp = ResponseHandle::new();
+        resp.write_body(b"body only");
+        let coyote = resp.into_coyote();
+        assert_eq!(coyote.status, DEFAULT_STATUS);
+        assert_eq!(&coyote.body[..], b"body only");
+    }
+
+    #[test]
+    fn into_coyote_works_with_outstanding_clones() {
+        let resp = ResponseHandle::new();
+        let sink = resp.sink_handle();
+        resp.set_status(200);
+        resp.write_body(b"shared");
+        // `sink` keeps the Arc alive; `into_coyote` must still succeed.
+        let coyote = resp.into_coyote();
+        assert_eq!(&coyote.body[..], b"shared");
+        // The observer still sees the state.
+        assert_eq!(sink.snapshot().body, b"shared");
     }
 }

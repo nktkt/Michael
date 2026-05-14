@@ -8,6 +8,9 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 description = "Rust ↔ JVM bridge for running existing Java Servlets/WARs inside the Tomcat-RS Compatibility Runtime"
+# Compiles the `java/` bridge sources into `tomcatrs-bridge.jar` when the
+# `jvm` feature is enabled; a clean no-op otherwise. See `build.rs`.
+build = "build.rs"
 
 [features]
 default = []
@@ -17,6 +20,7 @@ jvm = ["dep:jni"]
 
 [dependencies]
 tomcatrs-core.workspace = true
+tomcatrs-coyote.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 dashmap.workspace = true
