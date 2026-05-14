@@ -13,6 +13,7 @@
 //! | [`acceptor`]  | `TcpListener` accept loop, one tokio task per connection.        |
 //! | [`protocol`]  | Dispatch a freshly accepted connection to the right protocol.    |
 //! | [`http1`]     | A real, working HTTP/1.1 parser and writer.                      |
+//! | [`chunked`]   | HTTP/1.1 chunked transfer-encoding decoding and encoding.        |
 //! | [`http2`]     | HTTP/2 scaffold (not implemented in v0.1.0).                     |
 //! | [`ajp`]       | AJP scaffold (not implemented in v0.1.0).                        |
 //! | [`tls`]       | TLS termination scaffold (intended `rustls` integration).        |
@@ -45,6 +46,7 @@
 
 pub mod acceptor;
 pub mod ajp;
+pub mod chunked;
 pub mod http1;
 pub mod http2;
 pub mod normalize;

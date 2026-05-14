@@ -11,9 +11,14 @@
 //! * support HTTP/1.1 keep-alive (and `Connection: close`),
 //! * write a well-formed response (status line + headers + body).
 //!
-//! It deliberately does **not** implement chunked transfer-encoding decoding,
-//! `Expect: 100-continue`, or trailers yet — those are tracked for a later
-//! revision. A request using chunked encoding is rejected with `411`.
+//! Request bodies framed with `Transfer-Encoding: chunked` are decoded via
+//! [`crate::chunked::ChunkedDecoder`], including parsed-and-ignored chunk
+//! extensions and collected trailer headers. A request that supplies both
+//! `Content-Length` and `Transfer-Encoding` is rejected with `400` as a
+//! request-smuggling defense.
+//!
+//! It deliberately does **not** implement `Expect: 100-continue` yet — that is
+//! tracked for a later revision.
 //!
 //! [RFC 9112]: https://www.rfc-editor.org/rfc/rfc9112
 
@@ -36,6 +41,7 @@ use crate::{Adapter, Request, Response};
 const HEADER_BLOCK_HARD_CAP: usize = 1024 * 1024;
 
 /// The outcome of attempting to parse one request off the connection.
+#[derive(Debug)]
 enum ReadOutcome {
     /// A complete request was parsed.
     Request(Request),
@@ -156,10 +162,13 @@ fn bad_request(reason: &str) -> Response {
 /// trailing `CRLF CRLF` and `leftover_body_bytes` is any body data that arrived
 /// in the same read(s).
 ///
-/// `Ok(None)` means the peer closed the connection before sending anything
-/// (a clean idle-timeout / keep-alive shutdown).
+/// `carryover` holds bytes that were read past the previous request on this
+/// connection (relevant for pipelined requests); they are consumed first,
+/// before touching the socket. `Ok(None)` means the peer closed the connection
+/// before sending anything (a clean idle-timeout / keep-alive shutdown).
 async fn read_head<S>(
     stream: &mut S,
+    carryover: &mut Vec<u8>,
     keep_alive_timeout: Duration,
 ) -> std::result::Result<Option<(Vec<u8>, Vec<u8>)>, Response>
 where
@@ -167,7 +176,15 @@ where
 {
     let mut buf: Vec<u8> = Vec::with_capacity(2048);
     let mut chunk = [0u8; 4096];
-    let mut first_read = true;
+    // Seed from any bytes carried over from the previous request.
+    let mut first_read = carryover.is_empty();
+    if !carryover.is_empty() {
+        buf.append(carryover);
+        if let Some(pos) = find_header_end(&buf) {
+            let leftover = buf.split_off(pos);
+            return Ok(Some((buf, leftover)));
+        }
+    }
 
     loop {
         let read_result = if first_read {
@@ -215,40 +232,92 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
 }
 
-/// Parse the `Content-Length` header, if present.
+/// How the request body is framed on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BodyFraming {
+    /// No body, or an explicit `Content-Length: 0`.
+    None,
+    /// A fixed-length body of exactly `n` bytes (`Content-Length: n`).
+    Fixed(usize),
+    /// A `Transfer-Encoding: chunked` body to be decoded incrementally.
+    Chunked,
+}
+
+/// Determine how the request body is framed from its headers.
 ///
-/// Returns `Ok(None)` when absent, `Ok(Some(n))` when valid, and an `Err`
-/// response when malformed.
-fn content_length(headers: &[(String, String)]) -> std::result::Result<Option<usize>, Response> {
-    // Reject chunked encoding explicitly — not supported in v0.1.0.
-    if let Some((_, te)) = headers
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("transfer-encoding"))
-    {
-        if te.to_ascii_lowercase().contains("chunked") {
-            return Err(Response::with_body(
-                411,
-                "chunked transfer-encoding is not supported in v0.1.0",
-            ));
+/// Implements the precedence rules of [RFC 9112 §6]: a `chunked`
+/// transfer-coding wins, a `Content-Length` gives a fixed length, and the two
+/// appearing together is treated as a request-smuggling attempt and rejected
+/// with `400`.
+///
+/// # Errors
+///
+/// Returns a [`Response`] (wrapped in `Err`) carrying the status the offending
+/// request should be answered with.
+fn body_framing(headers: &[(String, String)]) -> std::result::Result<BodyFraming, Response> {
+    // Collect every transfer-coding declared across all Transfer-Encoding
+    // headers (a peer may legally split them, e.g. "gzip" then "chunked").
+    let mut has_transfer_encoding = false;
+    let mut is_chunked = false;
+    for (k, v) in headers {
+        if k.eq_ignore_ascii_case("transfer-encoding") {
+            has_transfer_encoding = true;
+            let lower = v.to_ascii_lowercase();
+            for coding in lower.split(',') {
+                let coding = coding.trim();
+                if coding == "chunked" {
+                    is_chunked = true;
+                } else if !coding.is_empty() {
+                    // We only implement the `chunked` coding; anything else
+                    // (gzip, deflate, …) we cannot decode.
+                    return Err(Response::with_body(
+                        501,
+                        format!("unsupported transfer-coding: {coding}"),
+                    ));
+                }
+            }
         }
     }
+    if has_transfer_encoding && !is_chunked {
+        // Per RFC 9112 §6.1, if a Transfer-Encoding is present its final coding
+        // must be `chunked`; otherwise the message length is undeterminable.
+        return Err(bad_request(
+            "Transfer-Encoding present without final 'chunked' coding",
+        ));
+    }
 
-    let mut found: Option<usize> = None;
+    let mut content_length: Option<usize> = None;
     for (k, v) in headers {
         if k.eq_ignore_ascii_case("content-length") {
             let parsed: usize = v
                 .trim()
                 .parse()
                 .map_err(|_| bad_request("invalid Content-Length"))?;
-            if let Some(prev) = found {
+            if let Some(prev) = content_length {
                 if prev != parsed {
                     return Err(bad_request("conflicting Content-Length headers"));
                 }
             }
-            found = Some(parsed);
+            content_length = Some(parsed);
         }
     }
-    Ok(found)
+
+    // Content-Length together with Transfer-Encoding is a classic request
+    // smuggling vector — reject it outright.
+    if is_chunked && content_length.is_some() {
+        return Err(bad_request(
+            "Content-Length and Transfer-Encoding must not both be present",
+        ));
+    }
+
+    if is_chunked {
+        Ok(BodyFraming::Chunked)
+    } else {
+        match content_length {
+            Some(0) | None => Ok(BodyFraming::None),
+            Some(n) => Ok(BodyFraming::Fixed(n)),
+        }
+    }
 }
 
 /// Decide whether the connection should be kept alive after this request.
@@ -264,16 +333,132 @@ fn wants_keep_alive(version: &str, headers: &[(String, String)]) -> bool {
     }
 }
 
+/// Read a fixed-length (`Content-Length`-framed) request body.
+///
+/// `leftover` carries body bytes that already arrived alongside the header
+/// block; the remainder is read from `stream`. The returned vector is exactly
+/// `body_len` bytes long. Any bytes in `leftover` beyond `body_len` belong to a
+/// pipelined request and are appended to `carryover` for the next
+/// [`read_head`] call.
+///
+/// # Errors
+///
+/// Returns a [`Response`] on a premature close, socket error, or timeout.
+async fn read_fixed_body<S>(
+    stream: &mut S,
+    mut leftover: Vec<u8>,
+    carryover: &mut Vec<u8>,
+    body_len: usize,
+    limits: &RequestLimits,
+) -> std::result::Result<Vec<u8>, Response>
+where
+    S: AsyncReadExt + Unpin,
+{
+    if leftover.len() > body_len {
+        // Bytes past this request's body belong to the next pipelined request.
+        carryover.extend_from_slice(&leftover[body_len..]);
+        leftover.truncate(body_len);
+    }
+    let mut body = leftover;
+    let mut chunk = [0u8; 8192];
+    while body.len() < body_len {
+        let remaining = body_len - body.len();
+        let want = remaining.min(chunk.len());
+        match timeout(limits.request_timeout, stream.read(&mut chunk[..want])).await {
+            Ok(Ok(0)) => return Err(bad_request("connection closed mid-body")),
+            Ok(Ok(n)) => body.extend_from_slice(&chunk[..n]),
+            Ok(Err(e)) => {
+                tracing::debug!(error = %e, "socket read error while reading body");
+                return Err(bad_request("socket read error reading body"));
+            }
+            Err(_) => return Err(Response::with_body(408, "Request Timeout")),
+        }
+    }
+    Ok(body)
+}
+
+/// Read and decode a `Transfer-Encoding: chunked` request body.
+///
+/// `leftover` carries body bytes that already arrived alongside the header
+/// block; further bytes are read from `stream` until the
+/// [`ChunkedDecoder`](crate::chunked::ChunkedDecoder) reports the chunked body
+/// complete. The decoder bounds the cumulative decoded size by
+/// `limits.max_post_size`. Any bytes read past the terminating CRLF belong to
+/// the next pipelined request and are appended to `carryover`.
+///
+/// # Errors
+///
+/// Returns a `413` for an oversized body, a `400` for a malformed chunk
+/// stream, a `408` on timeout, and a `400` on a premature close or socket
+/// error.
+async fn read_chunked_body<S>(
+    stream: &mut S,
+    leftover: Vec<u8>,
+    carryover: &mut Vec<u8>,
+    limits: &RequestLimits,
+) -> std::result::Result<Vec<u8>, Response>
+where
+    S: AsyncReadExt + Unpin,
+{
+    use crate::chunked::{ChunkedDecoder, ChunkedError};
+
+    /// Translate a decoder error into the right HTTP rejection response.
+    fn reject(e: ChunkedError) -> Response {
+        match e {
+            ChunkedError::TooLarge(_) => Response::with_body(413, "Payload Too Large"),
+            ChunkedError::Malformed(msg) => bad_request(&format!("chunked body: {msg}")),
+        }
+    }
+
+    let mut decoder = ChunkedDecoder::new(limits.max_post_size);
+
+    // Feed whatever already arrived with the header block.
+    if !leftover.is_empty() {
+        let consumed = decoder.push(&leftover).map_err(reject)?;
+        if decoder.is_complete() {
+            carryover.extend_from_slice(&leftover[consumed..]);
+            return Ok(decoder.into_body());
+        }
+    }
+
+    let mut chunk = [0u8; 8192];
+    while !decoder.is_complete() {
+        match timeout(limits.request_timeout, stream.read(&mut chunk)).await {
+            Ok(Ok(0)) => return Err(bad_request("connection closed mid-chunked-body")),
+            Ok(Ok(n)) => {
+                let consumed = decoder.push(&chunk[..n]).map_err(reject)?;
+                if decoder.is_complete() {
+                    // Bytes past the chunked body belong to the next request.
+                    carryover.extend_from_slice(&chunk[consumed..n]);
+                }
+            }
+            Ok(Err(e)) => {
+                tracing::debug!(error = %e, "socket read error while reading chunked body");
+                return Err(bad_request("socket read error reading chunked body"));
+            }
+            Err(_) => return Err(Response::with_body(408, "Request Timeout")),
+        }
+    }
+
+    Ok(decoder.into_body())
+}
+
 /// Read one full request — head + body — off the connection.
+///
+/// `carryover` holds any bytes read past the previous request on this
+/// connection (for pipelined requests) and, on return, holds any bytes read
+/// past *this* request's body.
 async fn read_request<S>(
     stream: &mut S,
+    carryover: &mut Vec<u8>,
     peer_addr: SocketAddr,
     limits: &RequestLimits,
 ) -> ReadOutcome
 where
     S: AsyncReadExt + Unpin,
 {
-    let (head_bytes, mut leftover) = match read_head(stream, limits.keep_alive_timeout).await {
+    let (head_bytes, leftover) = match read_head(stream, carryover, limits.keep_alive_timeout).await
+    {
         Ok(Some(parts)) => parts,
         Ok(None) => return ReadOutcome::ConnectionClosed,
         Err(resp) => return ReadOutcome::Reject(resp),
@@ -284,41 +469,30 @@ where
         Err(resp) => return ReadOutcome::Reject(resp),
     };
 
-    let body_len = match content_length(&head.headers) {
-        Ok(len) => len.unwrap_or(0),
+    let framing = match body_framing(&head.headers) {
+        Ok(f) => f,
         Err(resp) => return ReadOutcome::Reject(resp),
     };
 
-    if body_len > limits.max_post_size {
-        // 413 Payload Too Large
-        return ReadOutcome::Reject(Response::with_body(413, "Payload Too Large"));
-    }
-
-    // Read the remaining body bytes (those not already in `leftover`).
-    let mut body = leftover.split_off(leftover.len().min(body_len));
-    std::mem::swap(&mut body, &mut leftover);
-    // `body` now holds at most `body_len` bytes already received.
-    if body.len() > body_len {
-        body.truncate(body_len);
-    }
-    let mut chunk = [0u8; 8192];
-    while body.len() < body_len {
-        let remaining = body_len - body.len();
-        let want = remaining.min(chunk.len());
-        match timeout(limits.request_timeout, stream.read(&mut chunk[..want])).await {
-            Ok(Ok(0)) => {
-                return ReadOutcome::Reject(bad_request("connection closed mid-body"));
+    let body = match framing {
+        BodyFraming::None => Vec::new(),
+        BodyFraming::Fixed(body_len) => {
+            if body_len > limits.max_post_size {
+                // 413 Payload Too Large
+                return ReadOutcome::Reject(Response::with_body(413, "Payload Too Large"));
             }
-            Ok(Ok(n)) => body.extend_from_slice(&chunk[..n]),
-            Ok(Err(e)) => {
-                tracing::debug!(error = %e, "socket read error while reading body");
-                return ReadOutcome::Reject(bad_request("socket read error reading body"));
-            }
-            Err(_) => {
-                return ReadOutcome::Reject(Response::with_body(408, "Request Timeout"));
+            match read_fixed_body(stream, leftover, carryover, body_len, limits).await {
+                Ok(body) => body,
+                Err(resp) => return ReadOutcome::Reject(resp),
             }
         }
-    }
+        BodyFraming::Chunked => {
+            match read_chunked_body(stream, leftover, carryover, limits).await {
+                Ok(body) => body,
+                Err(resp) => return ReadOutcome::Reject(resp),
+            }
+        }
+    };
 
     // Normalize the request target into path + query.
     let normalized = match normalize_target(&head.target) {
@@ -408,8 +582,11 @@ pub async fn serve_connection<S>(
 where
     S: AsyncReadExt + AsyncWriteExt + Unpin,
 {
+    // Bytes read past one request's body that belong to the next pipelined
+    // request on this keep-alive connection.
+    let mut carryover: Vec<u8> = Vec::new();
     loop {
-        match read_request(&mut stream, peer_addr, limits).await {
+        match read_request(&mut stream, &mut carryover, peer_addr, limits).await {
             ReadOutcome::ConnectionClosed => {
                 tracing::trace!(%peer_addr, "connection closed by peer");
                 return Ok(());
@@ -555,27 +732,58 @@ mod tests {
     }
 
     #[test]
-    fn content_length_parsing() {
+    fn body_framing_content_length() {
         let headers = vec![("Content-Length".to_string(), "42".to_string())];
-        assert_eq!(content_length(&headers).unwrap(), Some(42));
+        assert_eq!(body_framing(&headers).unwrap(), BodyFraming::Fixed(42));
 
         let none: Vec<(String, String)> = vec![];
-        assert_eq!(content_length(&none).unwrap(), None);
+        assert_eq!(body_framing(&none).unwrap(), BodyFraming::None);
+
+        let zero = vec![("Content-Length".to_string(), "0".to_string())];
+        assert_eq!(body_framing(&zero).unwrap(), BodyFraming::None);
 
         let bad = vec![("Content-Length".to_string(), "abc".to_string())];
-        assert_eq!(content_length(&bad).unwrap_err().status, 400);
+        assert_eq!(body_framing(&bad).unwrap_err().status, 400);
 
         let conflict = vec![
             ("Content-Length".to_string(), "1".to_string()),
             ("Content-Length".to_string(), "2".to_string()),
         ];
-        assert_eq!(content_length(&conflict).unwrap_err().status, 400);
+        assert_eq!(body_framing(&conflict).unwrap_err().status, 400);
     }
 
     #[test]
-    fn chunked_encoding_is_rejected_with_411() {
+    fn body_framing_recognizes_chunked() {
         let headers = vec![("Transfer-Encoding".to_string(), "chunked".to_string())];
-        assert_eq!(content_length(&headers).unwrap_err().status, 411);
+        assert_eq!(body_framing(&headers).unwrap(), BodyFraming::Chunked);
+
+        // Case-insensitive and tolerant of a leading transfer-coding.
+        let mixed = vec![("transfer-encoding".to_string(), "CHUNKED".to_string())];
+        assert_eq!(body_framing(&mixed).unwrap(), BodyFraming::Chunked);
+    }
+
+    #[test]
+    fn body_framing_rejects_content_length_plus_chunked() {
+        // Request smuggling defense: both framings together → 400.
+        let headers = vec![
+            ("Content-Length".to_string(), "5".to_string()),
+            ("Transfer-Encoding".to_string(), "chunked".to_string()),
+        ];
+        assert_eq!(body_framing(&headers).unwrap_err().status, 400);
+    }
+
+    #[test]
+    fn body_framing_rejects_unsupported_transfer_coding() {
+        let headers = vec![("Transfer-Encoding".to_string(), "gzip".to_string())];
+        assert_eq!(body_framing(&headers).unwrap_err().status, 501);
+    }
+
+    #[test]
+    fn body_framing_rejects_te_without_chunked_final() {
+        // A non-chunked transfer-coding leaves the length undeterminable.
+        let headers = vec![("Transfer-Encoding".to_string(), "chunked, gzip".to_string())];
+        // "gzip" is an unsupported coding → 501 before the final-coding check.
+        assert_eq!(body_framing(&headers).unwrap_err().status, 501);
     }
 
     #[test]
@@ -618,7 +826,8 @@ mod tests {
         let raw = b"POST /submit HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello".to_vec();
         let mut cursor = std::io::Cursor::new(raw);
         let peer: SocketAddr = "127.0.0.1:12345".parse().unwrap();
-        match read_request(&mut cursor, peer, &limits()).await {
+        let mut carry = Vec::new();
+        match read_request(&mut cursor, &mut carry, peer, &limits()).await {
             ReadOutcome::Request(req) => {
                 assert_eq!(req.method, "POST");
                 assert_eq!(req.path, "/submit");
@@ -635,9 +844,91 @@ mod tests {
         let raw = b"POST / HTTP/1.1\r\nContent-Length: 10\r\n\r\n0123456789".to_vec();
         let mut cursor = std::io::Cursor::new(raw);
         let peer: SocketAddr = "127.0.0.1:1".parse().unwrap();
-        match read_request(&mut cursor, peer, &l).await {
+        let mut carry = Vec::new();
+        match read_request(&mut cursor, &mut carry, peer, &l).await {
             ReadOutcome::Reject(resp) => assert_eq!(resp.status, 413),
             _ => panic!("expected rejection"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_request_decodes_chunked_body() {
+        // A POST whose body is chunked, with a chunk extension and a trailer.
+        let raw = b"POST /upload HTTP/1.1\r\n\
+            Host: example.com\r\n\
+            Transfer-Encoding: chunked\r\n\
+            \r\n\
+            4;meta=1\r\nWiki\r\n5\r\npedia\r\n0\r\nX-Sum: 99\r\n\r\n"
+            .to_vec();
+        let mut cursor = std::io::Cursor::new(raw);
+        let peer: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let mut carry = Vec::new();
+        match read_request(&mut cursor, &mut carry, peer, &limits()).await {
+            ReadOutcome::Request(req) => {
+                assert_eq!(req.method, "POST");
+                assert_eq!(req.path, "/upload");
+                assert_eq!(&req.body[..], b"Wikipedia");
+            }
+            other => panic!("expected a parsed request, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_request_rejects_oversized_chunked_body_with_413() {
+        let mut l = limits();
+        l.max_post_size = 4;
+        let raw = b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n\
+            a\r\n0123456789\r\n0\r\n\r\n"
+            .to_vec();
+        let mut cursor = std::io::Cursor::new(raw);
+        let peer: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let mut carry = Vec::new();
+        match read_request(&mut cursor, &mut carry, peer, &l).await {
+            ReadOutcome::Reject(resp) => assert_eq!(resp.status, 413),
+            other => panic!("expected 413 rejection, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_request_rejects_malformed_chunked_body_with_400() {
+        let raw = b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n\
+            zz\r\nabc\r\n0\r\n\r\n"
+            .to_vec();
+        let mut cursor = std::io::Cursor::new(raw);
+        let peer: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let mut carry = Vec::new();
+        match read_request(&mut cursor, &mut carry, peer, &limits()).await {
+            ReadOutcome::Reject(resp) => assert_eq!(resp.status, 400),
+            other => panic!("expected 400 rejection, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn keep_alive_works_after_a_chunked_request() {
+        // Two requests on one connection: a chunked POST, then a plain GET.
+        // They arrive in one buffer (pipelined), so the chunked decoder must
+        // hand the trailing GET bytes back via the carryover buffer.
+        let raw = b"POST /a HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n\
+            3\r\nabc\r\n0\r\n\r\n\
+            GET /b HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+            .to_vec();
+        let mut cursor = std::io::Cursor::new(raw);
+        let peer: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let mut carry = Vec::new();
+
+        match read_request(&mut cursor, &mut carry, peer, &limits()).await {
+            ReadOutcome::Request(req) => {
+                assert_eq!(req.path, "/a");
+                assert_eq!(&req.body[..], b"abc");
+            }
+            other => panic!("expected first request, got {other:?}"),
+        }
+        match read_request(&mut cursor, &mut carry, peer, &limits()).await {
+            ReadOutcome::Request(req) => {
+                assert_eq!(req.path, "/b");
+                assert!(req.body.is_empty());
+            }
+            other => panic!("expected second request, got {other:?}"),
         }
     }
 }

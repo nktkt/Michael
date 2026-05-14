@@ -1073,6 +1073,7 @@ name = "tomcatrs-catalina"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "dashmap",
  "parking_lot",
  "thiserror",
@@ -1080,6 +1081,7 @@ dependencies = [
  "tomcatrs-config",
  "tomcatrs-core",
  "tomcatrs-coyote",
+ "tomcatrs-webapp",
  "tracing",
 ]
 

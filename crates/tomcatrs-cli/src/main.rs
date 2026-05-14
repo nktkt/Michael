@@ -4,8 +4,9 @@
 //! This binary crate ties the workspace together: it parses the CLI, loads a
 //! [`tomcatrs_config::ServerConfig`], boots a [`tomcatrs_catalina::Server`]
 //! through its [`tomcatrs_core::Lifecycle`], and stands up a
-//! [`tomcatrs_coyote::HttpConnector`] per HTTP/1.1 connector backed by the
-//! built-in [`StaticAdapter`].
+//! [`tomcatrs_coyote::HttpConnector`] per HTTP/1.1 connector backed by a
+//! [`tomcatrs_catalina::adapter::CatalinaAdapter`], which routes every request
+//! through the Catalina mapper (`Engine` ➜ `Host` ➜ `Context` ➜ `Wrapper`).
 //!
 //! ```text
 //! tomcatrs run          [--config server.xml] [--port N] [--app-base DIR] [--log-level L]
@@ -14,22 +15,21 @@
 //! ```
 //!
 //! Servlet/JSP execution is delegated to the JVM bridge and is intentionally
-//! *not* wired into this v0.1.0 MVP — `run` serves static content only.
+//! *not* wired into this MVP — a mapped servlet currently yields a `501`
+//! routing placeholder, while contexts with static resources are served from
+//! their document base.
 
 #![deny(missing_docs)]
-
-mod static_adapter;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
+use tomcatrs_catalina::adapter::CatalinaAdapter;
 use tomcatrs_config::{Protocol, ServerConfig};
 use tomcatrs_core::{Lifecycle, LifecycleContext};
 use tomcatrs_coyote::HttpConnector;
-
-use crate::static_adapter::StaticAdapter;
 
 /// The `tomcatrs` command-line interface.
 #[derive(Debug, Parser)]
@@ -147,37 +147,46 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
         .context("Catalina server failed to start")?;
     log_container_tree(&config);
 
-    // 4. Stand up one HTTP/1.1 connector per matching `<Connector>`. Other
-    //    protocols are recognised but not served in v0.1.0.
+    // 4. Stand up one HTTP/1.1 connector per matching `<Connector>`, each
+    //    backed by a `CatalinaAdapter` that routes through the live container
+    //    tree. Other protocols are recognised but not served in v0.1.0.
     let app_base = args.app_base.clone();
     let mut connector_tasks = Vec::new();
     let mut http11_count = 0usize;
 
-    for service in &config.services {
-        for connector_cfg in &service.connectors {
+    for service in server.services() {
+        // The adapter for this service routes against its engine's host tree;
+        // unmatched requests fall back to `--app-base` so the default
+        // `webapps/ROOT` page and proper 404s still work.
+        let adapter: Arc<CatalinaAdapter> = Arc::new(CatalinaAdapter::new(
+            Arc::clone(service.engine()),
+            app_base.clone(),
+        ));
+
+        for connector_cfg in service.connector_configs() {
             match connector_cfg.protocol {
                 Protocol::Http11 => {
                     http11_count += 1;
-                    let adapter = Arc::new(StaticAdapter::new(app_base.clone()));
-                    let connector = HttpConnector::new(connector_cfg.clone(), adapter);
+                    let connector =
+                        HttpConnector::new(connector_cfg.clone(), Arc::clone(&adapter) as Arc<_>);
                     tracing::info!(
-                        service = %service.name,
+                        service = %service.name(),
                         port = connector_cfg.port,
                         app_base = %app_base.display(),
-                        "starting HTTP/1.1 connector",
+                        "starting HTTP/1.1 connector (CatalinaAdapter)",
                     );
                     connector_tasks.push(tokio::spawn(async move { connector.serve().await }));
                 }
                 Protocol::Http2 => {
                     tracing::warn!(
-                        service = %service.name,
+                        service = %service.name(),
                         port = connector_cfg.port,
                         "HTTP/2 connector is not served in v0.1.0 — skipping",
                     );
                 }
                 Protocol::Ajp => {
                     tracing::warn!(
-                        service = %service.name,
+                        service = %service.name(),
                         port = connector_cfg.port,
                         "AJP connector is not served in v0.1.0 — skipping",
                     );

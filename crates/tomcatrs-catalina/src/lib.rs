@@ -53,20 +53,29 @@
 
 #![deny(missing_docs)]
 
+pub mod adapter;
+pub mod background;
 pub mod context;
+pub mod deployer;
 pub mod engine;
+pub mod filter;
 pub mod host;
 pub mod mapper;
+pub mod pipeline;
 pub mod server;
 pub mod service;
 pub mod state;
+pub mod valve;
 pub mod wrapper;
 
+pub use adapter::CatalinaAdapter;
 pub use context::Context;
 pub use engine::Engine;
 pub use host::Host;
 pub use mapper::{Mapper, MappingResult, UrlPattern};
+pub use pipeline::StandardPipeline;
 pub use server::Server;
 pub use service::Service;
 pub use state::StateCell;
+pub use valve::Valve;
 pub use wrapper::Wrapper;

@@ -27,6 +27,9 @@ pub struct Host {
     aliases: Vec<String>,
     /// Directory scanned for deployable applications.
     app_base: PathBuf,
+    /// Whether applications dropped into `app_base` are auto-deployed and
+    /// auto-undeployed by a deployment watcher.
+    auto_deploy: bool,
     /// Deployed contexts, keyed by their context path.
     contexts: DashMap<String, Arc<Context>>,
     /// Current lifecycle state.
@@ -36,6 +39,10 @@ pub struct Host {
 impl Host {
     /// Create a host named `name` serving applications from `app_base`, with
     /// `aliases` and pre-built `contexts`.
+    ///
+    /// `auto_deploy` defaults to `true`, matching Tomcat's `Host` default; use
+    /// [`Host::with_auto_deploy`] to override it, or build from a
+    /// [`HostConfig`] with [`Host::from_config`].
     pub fn new(
         name: impl Into<String>,
         app_base: PathBuf,
@@ -50,9 +57,17 @@ impl Host {
             name: name.into(),
             aliases,
             app_base,
+            auto_deploy: true,
             contexts: map,
             state: StateCell::new(),
         }
+    }
+
+    /// Set whether this host auto-deploys applications dropped into its
+    /// `app_base`, returning `self` for builder-style chaining.
+    pub fn with_auto_deploy(mut self, auto_deploy: bool) -> Self {
+        self.auto_deploy = auto_deploy;
+        self
     }
 
     /// Build a host from its parsed [`HostConfig`], constructing one
@@ -69,6 +84,7 @@ impl Host {
             config.aliases.clone(),
             contexts,
         )
+        .with_auto_deploy(config.auto_deploy)
     }
 
     /// The canonical host name.
@@ -86,6 +102,13 @@ impl Host {
         &self.app_base
     }
 
+    /// Whether applications dropped into `app_base` are auto-deployed (and, by
+    /// a [`DeploymentWatcher`](crate::deployer::DeploymentWatcher),
+    /// auto-undeployed).
+    pub fn auto_deploy(&self) -> bool {
+        self.auto_deploy
+    }
+
     /// The map of deployed contexts, keyed by context path.
     pub fn contexts(&self) -> &DashMap<String, Arc<Context>> {
         &self.contexts
@@ -99,6 +122,21 @@ impl Host {
     /// Deploy (or replace) a context under this host.
     pub fn add_context(&self, context: Arc<Context>) {
         self.contexts.insert(context.path().to_string(), context);
+    }
+
+    /// Register a context under this host, keyed by its context path.
+    ///
+    /// This is the entry point used by the [`deployer`](crate::deployer) when
+    /// it discovers a web application in `app_base`; it is an alias for
+    /// [`Host::add_context`] kept as a distinct, intention-revealing name for
+    /// auto-deployment call sites.
+    pub fn register_context(&self, context: Arc<Context>) {
+        self.add_context(context);
+    }
+
+    /// Remove the context mounted at `path`, returning it if one was deployed.
+    pub fn remove_context(&self, path: &str) -> Option<Arc<Context>> {
+        self.contexts.remove(path).map(|(_, ctx)| ctx)
     }
 
     /// The host's current [`LifecycleState`].
