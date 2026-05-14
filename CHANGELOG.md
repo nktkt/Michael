@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ROADMAP.md` — detailed per-version plan (v0.1.0 → v1.0.0) with status
+  markers, release themes, and cross-cutting work; linked from the README.
+
 ## [0.1.0] - 2026-05-14
 
 Initial early-MVP scaffold release.

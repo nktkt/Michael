@@ -252,6 +252,9 @@ A ten-milestone path from scaffold to a compatibility-tested runtime:
 10. **Production compatibility test suite** — the comparison-testing harness
     against stock Tomcat across a broad WAR corpus.
 
+See [`ROADMAP.md`](ROADMAP.md) for the detailed, per-version plan with
+current status, release themes, and cross-cutting work.
+
 ---
 
 ## Relationship to Apache Tomcat
