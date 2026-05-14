@@ -28,13 +28,19 @@
 
 #![deny(missing_docs)]
 
+pub mod el;
 pub mod jasper_bridge;
+pub mod jsp_config;
 pub mod precompile;
 pub mod scratchdir;
+pub mod taglib;
 
+pub use el::{ElContext, ElValue, Expression};
 pub use jasper_bridge::{JasperBridge, JspConfig};
-pub use precompile::PrecompileTask;
+pub use jsp_config::JspConfigDescriptor;
+pub use precompile::{PrecompileConfig, PrecompileReport, PrecompileTask};
 pub use scratchdir::ScratchDir;
+pub use taglib::{TagLibrary, TagLibraryMap, TldScanner};
 
 /// Crate version, sourced from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

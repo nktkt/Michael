@@ -2,12 +2,26 @@
 //!
 //! Jasper needs a writable working directory for each web application context:
 //! a place to emit generated servlet `.java` sources and their compiled
-//! `.class` files. In classic Tomcat this is `work/Catalina/<host>/<context>`.
+//! `.class` files. In classic Tomcat this is `work/<engine>/<host>/<context>`,
+//! e.g. `work/Catalina/localhost/ROOT` for the root context of the
+//! `localhost` host under the `Catalina` engine.
 //!
-//! Unlike the rest of this crate, [`ScratchDir`] is **not** a scaffold — it is
-//! a real, working implementation of that directory's lifecycle: create it,
-//! clean it out, and resolve paths within it. The JVM-side Jasper bridge is
-//! handed the resulting path.
+//! [`ScratchDir`] is a real, working implementation of that directory's
+//! lifecycle: build the conventional path ([`ScratchDir::for_context`]), create
+//! it, clean it out, resolve paths within it, and expose the
+//! [`jsp_output_dir`](ScratchDir::jsp_output_dir) where Jasper writes generated
+//! `.java` / `.class` files. The JVM-side Jasper bridge is handed the resulting
+//! path as its `scratchdir` init-param (see
+//! [`JspConfig::scratch_dir`](crate::jasper_bridge::JspConfig::scratch_dir)).
+//!
+//! # Development vs. production
+//!
+//! The scratch directory matters most in **development** mode, where Jasper
+//! compiles JSPs on demand and needs somewhere to emit the generated sources
+//! and classes. In **production** — where JSPs are precompiled ahead of time
+//! (see [`PrecompileTask`](crate::precompile::PrecompileTask)) — Jasper only
+//! loads already-compiled classes from the webapp class path, but the work
+//! directory is still created so Jasper has a valid, writable `scratchdir`.
 
 use std::path::{Path, PathBuf};
 
@@ -142,6 +156,32 @@ impl ScratchDir {
             self.path.join(stripped)
         }
     }
+
+    /// The directory *within* the scratch root where Jasper emits the generated
+    /// servlet `.java` sources and their compiled `.class` files.
+    ///
+    /// In classic Tomcat, Jasper writes generated artefacts directly into the
+    /// context's work directory; Tomcat-RS keeps the scratch root itself clean
+    /// for other per-context working files by giving Jasper a dedicated
+    /// `jsp/` subdirectory. The path is returned but **not** created — call
+    /// [`ScratchDir::ensure_jsp_output_dir`] (or [`ScratchDir::create`] on the
+    /// returned [`ScratchDir`]) to materialise it.
+    pub fn jsp_output_dir(&self) -> PathBuf {
+        self.path.join("jsp")
+    }
+
+    /// Like [`ScratchDir::jsp_output_dir`], but creates the directory (and any
+    /// missing parents) and returns it wrapped in its own [`ScratchDir`] so the
+    /// caller can manage its lifecycle (`clean`, `path_for`, …) too.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`tomcatrs_core::Error::Io`] if the directory cannot be created.
+    pub fn ensure_jsp_output_dir(&self) -> Result<ScratchDir> {
+        let dir = ScratchDir::new(self.jsp_output_dir());
+        dir.create()?;
+        Ok(dir)
+    }
 }
 
 /// Reduce a context path to a single safe directory-component name.
@@ -210,6 +250,34 @@ mod tests {
 
         let nested = ScratchDir::for_context(&base, "Catalina", "localhost", "/foo/bar");
         assert!(nested.path().ends_with("Catalina/localhost/foo_bar"));
+    }
+
+    #[test]
+    fn jsp_output_dir_is_a_subdir_of_the_scratch_root() {
+        let scratch = ScratchDir::new("/work/Catalina/localhost/ROOT");
+        assert_eq!(
+            scratch.jsp_output_dir(),
+            PathBuf::from("/work/Catalina/localhost/ROOT/jsp")
+        );
+    }
+
+    #[test]
+    fn ensure_jsp_output_dir_creates_and_returns_managed_dir() {
+        let dir = unique_dir("jsp-output");
+        let scratch = ScratchDir::new(&dir);
+        scratch.create().unwrap();
+
+        let jsp = scratch.ensure_jsp_output_dir().unwrap();
+        assert!(jsp.exists());
+        assert_eq!(jsp.path(), scratch.jsp_output_dir());
+        assert!(jsp.path().ends_with("jsp"));
+
+        // The returned ScratchDir is independently manageable.
+        fs::write(jsp.path_for("index_jsp.java"), b"class index_jsp {}").unwrap();
+        jsp.clean().unwrap();
+        assert_eq!(fs::read_dir(jsp.path()).unwrap().count(), 0);
+
+        scratch.remove().ok();
     }
 
     #[test]

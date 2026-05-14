@@ -9,7 +9,25 @@ homepage.workspace = true
 authors.workspace = true
 description = "Tomcat-RS JSP / Jasper integration scaffold"
 
+[features]
+# Optional passthrough: build the JSP crate with embedded-JVM support by
+# enabling the servlet bridge's `jvm` feature. Off by default so the crate
+# builds and tests with no JDK installed. Also links the `jni` crate, which
+# `jasper_bridge` uses directly to instantiate and `init()` Jasper's
+# `JspServlet` over JNI.
+jvm = ["tomcatrs-servlet-bridge/jvm", "dep:jni"]
+
 [dependencies]
 tomcatrs-core.workspace = true
+tomcatrs-servlet-bridge.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+quick-xml.workspace = true
+# `zip` is used by the TLD scanner to read tag library descriptors packaged
+# inside `WEB-INF/lib/*.jar` archives (a jar is a zip). `deflate` is required
+# because jar entries are commonly DEFLATE-compressed; the other default
+# features (encryption, bzip2, zstd, …) are not needed here.
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+# Only linked under `--features jvm`; the version matches the servlet bridge's
+# so a single `jni` build is shared across the workspace.
+jni = { version = "0.21", optional = true, features = ["invocation"] }

@@ -1250,9 +1250,13 @@ dependencies = [
 name = "tomcatrs-jsp"
 version = "0.1.0"
 dependencies = [
+ "jni",
+ "quick-xml",
  "thiserror 1.0.69",
  "tomcatrs-core",
+ "tomcatrs-servlet-bridge",
  "tracing",
+ "zip",
 ]
 
 [[package]]
