@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Sample server.xml for the Tomcat-RS Compatibility Runtime.
+
+  This mirrors the shape of an Apache Tomcat 11.0.x server.xml so an existing
+  configuration can be dropped in with minimal changes. See
+  docs/serverxml-support.md for exactly which elements and attributes the
+  tomcatrs-config parser honors today.
+
+  Validate without starting the server:
+      tomcatrs check-config conf/server.xml
+-->
+<Server port="8005" shutdown="SHUTDOWN">
+
+  <!--
+    A Service groups one or more Connectors with exactly one Engine.
+    Traffic on any Connector below is processed by the "Catalina" Engine.
+  -->
+  <Service name="Catalina">
+
+    <!--
+      HTTP/1.1 connector. This is the only fully working connector in v0.1.0.
+      - port:    TCP port to listen on
+      - protocol: HTTP/1.1
+      - address: optional bind address (omit to bind all interfaces)
+    -->
+    <Connector port="8080" protocol="HTTP/1.1" address="0.0.0.0"
+               connectionTimeout="20000" />
+
+    <!--
+      HTTP/2 connector (SCAFFOLDED in v0.1.0 - not yet functional).
+      Uncomment once HTTP/2 support lands; see the roadmap in README.md.
+
+    <Connector port="8443" protocol="HTTP/2" SSLEnabled="true" />
+    -->
+
+    <!--
+      AJP connector (SCAFFOLDED in v0.1.0 - not yet functional).
+      Uncomment once AJP support lands.
+
+    <Connector port="8009" protocol="AJP/1.3" address="127.0.0.1" />
+    -->
+
+    <!--
+      The Engine is the top of the request-processing pipeline.
+      defaultHost names the Host used when the request Host header
+      matches no configured Host.
+    -->
+    <Engine name="Catalina" defaultHost="localhost">
+
+      <!--
+        A virtual host.
+        - appBase:    directory scanned for deployed web applications
+        - autoDeploy: enables the deployment watcher for this Host
+      -->
+      <Host name="localhost" appBase="webapps"
+            autoDeploy="true" unpackWARs="true">
+
+        <!--
+          An explicitly declared web application context.
+          - path:    the context path requests are matched against
+          - docBase: the application directory (relative to appBase) or WAR
+        -->
+        <Context path="/examples" docBase="examples" reloadable="false" />
+
+      </Host>
+
+    </Engine>
+
+  </Service>
+
+</Server>

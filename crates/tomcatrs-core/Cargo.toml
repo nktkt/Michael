@@ -1,0 +1,15 @@
+[package]
+name = "tomcatrs-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Shared lifecycle, error, and runtime primitives for the Tomcat-RS Compatibility Runtime"
+
+[dependencies]
+thiserror.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+tokio.workspace = true

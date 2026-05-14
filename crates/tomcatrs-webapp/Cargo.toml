@@ -1,0 +1,16 @@
+[package]
+name = "tomcatrs-webapp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Tomcat-RS web application layer — WAR discovery, deployment, and resource access"
+
+[dependencies]
+tomcatrs-core.workspace = true
+quick-xml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

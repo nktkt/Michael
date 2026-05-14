@@ -1,0 +1,25 @@
+[package]
+name = "tomcatrs-servlet-bridge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Rust ↔ JVM bridge for running existing Java Servlets/WARs inside the Tomcat-RS Compatibility Runtime"
+
+[features]
+default = []
+# Enables the real embedded-JVM / JNI implementation. Requires a JDK at build
+# time (for the `jni` crate's headers) and at run time (for `libjvm`).
+jvm = ["dep:jni"]
+
+[dependencies]
+tomcatrs-core.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+dashmap.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+jni = { version = "0.21", optional = true, features = ["invocation"] }

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tomcat-RS Compatibility Runtime</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      max-width: 40rem;
+      margin: 4rem auto;
+      padding: 0 1.5rem;
+      line-height: 1.6;
+      color: #1a1a1a;
+    }
+    h1 { font-size: 1.6rem; margin-bottom: 0.25rem; }
+    .tagline { color: #555; margin-top: 0; }
+    .status {
+      display: inline-block;
+      background: #fff3cd;
+      border: 1px solid #ffe69c;
+      border-radius: 4px;
+      padding: 0.25rem 0.6rem;
+      font-size: 0.85rem;
+      margin: 1rem 0;
+    }
+    code { background: #f4f4f4; padding: 0.1rem 0.3rem; border-radius: 3px; }
+    footer { margin-top: 2.5rem; font-size: 0.8rem; color: #888; }
+    a { color: #0366d6; }
+  </style>
+</head>
+<body>
+  <h1>Tomcat-RS Compatibility Runtime &mdash; it works!</h1>
+  <p class="tagline">An incremental Rust rewrite of Apache Tomcat.</p>
+
+  <p class="status">v0.1.0 &mdash; early MVP / scaffold. Not production ready.</p>
+
+  <p>
+    If you can read this page, the Rust HTTP/1.1 connector accepted your
+    connection, the mapper routed the request to the default
+    <code>ROOT</code> web application, and the static resource handler served
+    this file &mdash; all on the Rust side.
+  </p>
+
+  <p>
+    Servlet, JSP, and WebSocket application code runs on an embedded JVM
+    reached through the JNI bridge. See the project
+    <a href="https://github.com/nktkt/Michael">repository</a> for
+    architecture and roadmap.
+  </p>
+
+  <footer>
+    Independent experimental project. Not affiliated with or endorsed by the
+    Apache Software Foundation. "Apache Tomcat" is a trademark of the ASF.
+  </footer>
+</body>
+</html>

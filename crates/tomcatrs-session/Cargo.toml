@@ -1,0 +1,29 @@
+[package]
+name = "tomcatrs-session"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Tomcat-RS HTTP session management — manager, cookie processor, and pluggable storage backends"
+
+[dependencies]
+tomcatrs-core.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+dashmap.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rand = "0.8"
+redis = { version = "0.27", optional = true, features = ["tokio-comp"] }
+
+[features]
+redis = ["dep:redis"]
+
+[dev-dependencies]
+tokio = { version = "1.38", features = ["macros", "rt-multi-thread"] }
