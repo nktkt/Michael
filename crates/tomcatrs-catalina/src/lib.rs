@@ -64,6 +64,7 @@ pub mod mapper;
 pub mod pipeline;
 pub mod server;
 pub mod service;
+pub mod startup;
 pub mod state;
 pub mod valve;
 pub mod wrapper;

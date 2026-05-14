@@ -124,12 +124,20 @@ impl HostDeployer {
             false,
             Vec::new(),
         ));
-        host.register_context(context);
+        host.register_context(Arc::clone(&context));
+
+        // Wire the application's `WEB-INF/web.xml` (servlets, filters, welcome
+        // files, listeners) into the freshly registered context. A webapp with
+        // no `web.xml` deploys successfully with an empty report.
+        let report = context.deploy()?;
 
         tracing::info!(
             host = %host.name(),
             context_path = %unit.context_path,
             doc_base = %unit.doc_base.display(),
+            had_web_xml = report.had_web_xml,
+            servlets = report.servlet_count,
+            filters = report.filter_count,
             "deployed web application"
         );
         Ok(())

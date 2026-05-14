@@ -20,6 +20,7 @@ jvm = ["dep:jni"]
 
 [dependencies]
 tomcatrs-core.workspace = true
+tomcatrs-config.workspace = true
 tomcatrs-coyote.workspace = true
 async-trait.workspace = true
 tracing.workspace = true

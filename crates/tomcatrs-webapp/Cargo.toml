@@ -14,3 +14,8 @@ tomcatrs-core.workspace = true
 quick-xml.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# `zip` is used by the annotation scanner to read `WEB-INF/lib/*.jar` archives
+# (a jar is a zip). `deflate` is required because jar entries are commonly
+# DEFLATE-compressed; the other default features (encryption, bzip2, zstd, …)
+# are not needed for classpath scanning, so they are turned off.
+zip = { version = "2.2", default-features = false, features = ["deflate"] }

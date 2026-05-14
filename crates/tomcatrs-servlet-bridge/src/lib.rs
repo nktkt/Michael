@@ -84,6 +84,8 @@ pub mod dispatch;
 pub mod invoker;
 pub mod jni;
 pub mod jvm;
+pub mod listener;
+pub mod registration;
 pub mod request_facade;
 pub mod response_facade;
 
