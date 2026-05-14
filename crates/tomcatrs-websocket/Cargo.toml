@@ -12,7 +12,19 @@ description = "Tomcat-RS WebSocket transport — RFC 6455 handshake and frame co
 [dependencies]
 tomcatrs-core.workspace = true
 bytes.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 sha1 = "0.10"
 base64 = "0.22"
+flate2 = { version = "1.0", optional = true }
+
+[dev-dependencies]
+tokio.workspace = true
+
+[features]
+default = []
+# Enables actual permessage-deflate (RFC 7692) payload compression. When
+# disabled the extension is still *negotiated and parsed*, but offers are
+# rejected so no compressed frames are ever produced or expected.
+deflate = ["dep:flate2"]
