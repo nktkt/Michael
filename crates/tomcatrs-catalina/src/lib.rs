@@ -56,6 +56,7 @@
 pub mod adapter;
 pub mod background;
 pub mod context;
+pub mod default_servlet;
 pub mod deployer;
 pub mod engine;
 pub mod filter;

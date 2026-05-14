@@ -22,9 +22,14 @@ jvm = ["dep:jni"]
 tomcatrs-core.workspace = true
 tomcatrs-config.workspace = true
 tomcatrs-coyote.workspace = true
+tomcatrs-session.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 dashmap.workspace = true
 bytes.workspace = true
 thiserror.workspace = true
+# `async_servlet::AsyncContextState::await_completion` is part of the public
+# API: it `tokio::select!`s a `tokio::sync::Notify` against a
+# `tokio::time::sleep`, so tokio is a regular (not dev-only) dependency.
+tokio = { workspace = true }
 jni = { version = "0.21", optional = true, features = ["invocation"] }

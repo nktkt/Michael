@@ -75,6 +75,18 @@ impl SessionStore for MemorySessionStore {
         Ok(())
     }
 
+    /// Snapshot every session currently held.
+    ///
+    /// Enumerating an in-memory map is cheap, so this backend supports the
+    /// optional bulk-load operation directly. The order is unspecified.
+    async fn load_all(&self) -> tomcatrs_core::Result<Vec<SessionData>> {
+        Ok(self
+            .sessions
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect())
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -120,5 +132,25 @@ mod tests {
         assert_eq!(store.len(), 1);
         assert!(store.load("LIVE").await.unwrap().is_some());
         assert!(store.load("DEAD").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn load_all_returns_every_session() {
+        let store = MemorySessionStore::new();
+        assert!(store.load_all().await.unwrap().is_empty());
+
+        store.save(SessionData::new("A".to_string())).await.unwrap();
+        store.save(SessionData::new("B".to_string())).await.unwrap();
+        store.save(SessionData::new("C".to_string())).await.unwrap();
+
+        let mut ids: Vec<String> = store
+            .load_all()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["A", "B", "C"]);
     }
 }

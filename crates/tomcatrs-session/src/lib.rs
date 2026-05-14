@@ -5,14 +5,24 @@
 //! `org.apache.catalina.session` package:
 //!
 //! * [`SessionData`] — the in-memory representation of an HTTP session.
-//! * [`SessionStore`] — a pluggable async persistence trait, with three
+//! * [`SessionStore`] — a pluggable async persistence trait, with several
 //!   implementations:
 //!   * [`MemorySessionStore`] — a lock-free in-process map (the default).
-//!   * [`FileSessionStore`] — one JSON file per session on disk.
+//!   * [`FileSessionStore`] — one JSON file per session on disk, with
+//!     `PersistentManager`-style load-all / persist-all.
 //!   * [`RedisSessionStore`] — a Redis-backed store, gated behind the
 //!     non-default `redis` cargo feature.
+//!   * [`JdbcSessionStore`] — a JDBC-backed store that reaches a database
+//!     through a [`JdbcExecutor`] trait object supplied by the
+//!     catalina/bridge layer.
+//!   * [`ClusterSessionStore`] — an in-memory store that replicates writes to
+//!     peer nodes over a [`ClusterTransport`], implementing Tomcat's
+//!     `all-to-all` (DeltaManager) and `primary-backup` (BackupManager)
+//!     strategies.
 //! * [`SessionManager`] — the façade webapps use to create, look up, persist,
-//!   and expire sessions.
+//!   and expire sessions. It can also bulk-load every session at startup
+//!   ([`SessionManager::reload_all`]) and persist every session on shutdown
+//!   ([`SessionManager::persist_all`]).
 //! * [`CookieProcessor`] — parses inbound `Cookie:` headers and builds
 //!   `Set-Cookie` values for the `JSESSIONID` cookie.
 //!
@@ -47,6 +57,9 @@ mod store_file;
 mod store_memory;
 mod store_redis;
 
+pub mod store_cluster;
+pub mod store_jdbc;
+
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
@@ -54,7 +67,12 @@ use serde::{Deserialize, Serialize};
 
 pub use cookie::{CookieProcessor, SameSite};
 pub use manager::SessionManager;
+pub use store_cluster::{
+    ClusterMessage, ClusterSessionStore, ClusterTransport, InMemoryClusterTransport,
+    ReplicationMode,
+};
 pub use store_file::FileSessionStore;
+pub use store_jdbc::{JdbcExecutor, JdbcParam, JdbcRow, JdbcSessionStore, NullJdbcExecutor};
 pub use store_memory::MemorySessionStore;
 pub use store_redis::RedisSessionStore;
 
@@ -155,6 +173,25 @@ pub trait SessionStore: Send + Sync + std::any::Any {
     /// Remove the session with the given id. Deleting a missing session is not
     /// an error.
     async fn delete(&self, id: &str) -> tomcatrs_core::Result<()>;
+
+    /// Enumerate **every** session currently held by the backend.
+    ///
+    /// This powers Tomcat's `PersistentManager` swap-out behaviour, where a
+    /// manager reloads all persisted sessions at startup. It is an *optional*
+    /// trait method: a backend that cannot cheaply (or meaningfully) list its
+    /// contents — a Redis store keyed by an opaque prefix, say — keeps the
+    /// default implementation, which returns [`tomcatrs_core::Error::Other`].
+    /// Backends that can enumerate themselves ([`MemorySessionStore`],
+    /// [`FileSessionStore`], [`JdbcSessionStore`]) override it.
+    ///
+    /// Callers that want a best-effort bulk load should treat the default
+    /// "not supported" error as "nothing to reload" rather than a hard
+    /// failure; [`SessionManager::reload_all`] does exactly that.
+    async fn load_all(&self) -> tomcatrs_core::Result<Vec<SessionData>> {
+        Err(tomcatrs_core::Error::Other(
+            "load_all not supported by this store".to_string(),
+        ))
+    }
 
     /// Upcast to [`std::any::Any`] so a [`SessionManager`] can recognise a
     /// concrete backend (notably [`MemorySessionStore`]) behind the trait

@@ -89,6 +89,44 @@ impl SessionStore for FileSessionStore {
         }
     }
 
+    /// Load every persisted session by scanning the store directory for
+    /// `*.json` files.
+    ///
+    /// This is the read half of Tomcat's `PersistentManager` swap-in: a
+    /// [`SessionManager`](crate::SessionManager) calls it at startup via
+    /// [`SessionManager::reload_all`](crate::SessionManager::reload_all) to
+    /// repopulate itself from disk.
+    ///
+    /// Entries that are not `*.json` files are ignored. A file whose contents
+    /// fail to deserialise aborts the scan with [`Error::Other`]; this is
+    /// deliberate — silently dropping a corrupt session file would mask data
+    /// loss.
+    async fn load_all(&self) -> tomcatrs_core::Result<Vec<SessionData>> {
+        let mut entries = match tokio::fs::read_dir(&self.dir).await {
+            Ok(entries) => entries,
+            // A not-yet-created directory simply holds no sessions.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(Error::Io(e)),
+        };
+
+        let mut sessions = Vec::new();
+        while let Some(entry) = entries.next_entry().await.map_err(Error::Io)? {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            // Skip directories that happen to end in `.json`.
+            if !entry.file_type().await.map_err(Error::Io)?.is_file() {
+                continue;
+            }
+            let bytes = tokio::fs::read(&path).await.map_err(Error::Io)?;
+            let session: SessionData = serde_json::from_slice(&bytes)
+                .map_err(|e| Error::Other(format!("corrupt session file {path:?}: {e}")))?;
+            sessions.push(session);
+        }
+        Ok(sessions)
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -143,6 +181,35 @@ mod tests {
         let store = FileSessionStore::new(&dir).unwrap();
         assert!(store.load("../../etc/passwd").await.is_err());
         assert!(store.delete("with/slash").await.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn load_all_round_trips_persisted_sessions() {
+        let dir = temp_dir("loadall");
+        let store = FileSessionStore::new(&dir).unwrap();
+
+        // Empty directory: nothing to load.
+        assert!(store.load_all().await.unwrap().is_empty());
+
+        let mut a = SessionData::new("LOADALLA".to_string());
+        a.attributes.insert("k".to_string(), "v".to_string());
+        store.save(a.clone()).await.unwrap();
+        store
+            .save(SessionData::new("LOADALLB".to_string()))
+            .await
+            .unwrap();
+
+        // A non-session file in the directory must be ignored.
+        std::fs::write(dir.join("notes.txt"), b"ignore me").unwrap();
+
+        let mut loaded = store.load_all().await.unwrap();
+        loaded.sort_by(|x, y| x.id.cmp(&y.id));
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].id, "LOADALLA");
+        assert_eq!(loaded[0].attributes.get("k").map(String::as_str), Some("v"));
+        assert_eq!(loaded[1].id, "LOADALLB");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1293,9 +1293,11 @@ dependencies = [
  "dashmap",
  "jni",
  "thiserror 1.0.69",
+ "tokio",
  "tomcatrs-config",
  "tomcatrs-core",
  "tomcatrs-coyote",
+ "tomcatrs-session",
  "tracing",
 ]
 

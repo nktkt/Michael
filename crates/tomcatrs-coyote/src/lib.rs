@@ -47,6 +47,7 @@
 pub mod acceptor;
 pub mod ajp;
 pub mod chunked;
+pub mod cookies;
 pub mod http1;
 pub mod http2;
 pub mod normalize;
@@ -60,6 +61,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use crate::acceptor::Acceptor;
+pub use crate::cookies::{Cookie, MediaRange, SameSite, SetCookie};
 
 /// A fully parsed, normalized inbound request.
 ///
@@ -97,6 +99,55 @@ impl Request {
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case(name))
             .map(|(_, v)| v.as_str())
+    }
+
+    /// Parse every `Cookie:` request header into a flat list of [`Cookie`]s.
+    ///
+    /// A client may legally split its cookies across multiple `Cookie:`
+    /// headers; this concatenates them in arrival order. See
+    /// [`cookies::parse_cookie_header`] for the parsing rules.
+    pub fn cookies(&self) -> Vec<Cookie> {
+        self.headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("cookie"))
+            .flat_map(|(_, v)| cookies::parse_cookie_header(v))
+            .collect()
+    }
+
+    /// Look up the value of the first request cookie named `name`.
+    ///
+    /// Cookie names are matched case-sensitively, per [RFC 6265].
+    ///
+    /// [RFC 6265]: https://www.rfc-editor.org/rfc/rfc6265
+    pub fn cookie(&self, name: &str) -> Option<String> {
+        self.cookies()
+            .into_iter()
+            .find(|c| c.name == name)
+            .map(|c| c.value)
+    }
+
+    /// Parse the `Accept:` header into quality-ordered [`MediaRange`]s.
+    ///
+    /// Returns an empty vector when the header is absent or unparseable; see
+    /// [`cookies::parse_accept`].
+    pub fn accept(&self) -> Vec<MediaRange> {
+        self.header("accept")
+            .map(cookies::parse_accept)
+            .unwrap_or_default()
+    }
+
+    /// Parse the `Accept-Encoding:` header into a quality-ordered list.
+    pub fn accept_encoding(&self) -> Vec<cookies::QualityValue> {
+        self.header("accept-encoding")
+            .map(cookies::parse_accept_encoding)
+            .unwrap_or_default()
+    }
+
+    /// Parse the `Accept-Language:` header into a quality-ordered list.
+    pub fn accept_language(&self) -> Vec<cookies::QualityValue> {
+        self.header("accept-language")
+            .map(cookies::parse_accept_language)
+            .unwrap_or_default()
     }
 }
 
@@ -151,6 +202,17 @@ impl Response {
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case(name))
             .map(|(_, v)| v.as_str())
+    }
+
+    /// Append a `Set-Cookie` header carrying `c`.
+    ///
+    /// Unlike [`set_header`](Self::set_header) this always *appends*: a
+    /// response may legitimately carry many `Set-Cookie` headers, one per
+    /// cookie. Returns `&mut Self` for chaining.
+    pub fn add_set_cookie(&mut self, c: &cookies::SetCookie) -> &mut Self {
+        self.headers
+            .push(("Set-Cookie".to_string(), c.to_header_value()));
+        self
     }
 }
 
@@ -268,6 +330,43 @@ mod tests {
         assert_eq!(resp.status, 204);
         assert!(resp.body.is_empty());
         assert!(resp.headers.is_empty());
+    }
+
+    #[test]
+    fn request_cookie_lookup_across_multiple_headers() {
+        let req = Request {
+            method: "GET".into(),
+            uri: "/".into(),
+            path: "/".into(),
+            query: None,
+            version: "HTTP/1.1".into(),
+            headers: vec![
+                ("Cookie".into(), "JSESSIONID=ABC; theme=dark".into()),
+                ("Cookie".into(), "lang=en; bad-pair".into()),
+            ],
+            body: Bytes::new(),
+            peer_addr: "127.0.0.1:0".parse().unwrap(),
+        };
+        let all = req.cookies();
+        assert_eq!(all.len(), 3); // bad-pair skipped
+        assert_eq!(req.cookie("JSESSIONID"), Some("ABC".to_string()));
+        assert_eq!(req.cookie("theme"), Some("dark".to_string()));
+        assert_eq!(req.cookie("lang"), Some("en".to_string()));
+        assert_eq!(req.cookie("missing"), None);
+    }
+
+    #[test]
+    fn response_add_set_cookie_appends_each_call() {
+        let mut resp = Response::new(200);
+        resp.add_set_cookie(&SetCookie::new("a", "1").path("/"))
+            .add_set_cookie(&SetCookie::new("b", "2").http_only(true));
+        let set_cookies: Vec<&str> = resp
+            .headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("set-cookie"))
+            .map(|(_, v)| v.as_str())
+            .collect();
+        assert_eq!(set_cookies, vec!["a=1; Path=/", "b=2; HttpOnly"]);
     }
 
     /// A trivial adapter that echoes the request path back in the body.

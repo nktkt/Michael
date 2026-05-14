@@ -150,6 +150,80 @@ impl SessionManager {
         Ok(removed)
     }
 
+    /// Reload **every** session the backing store can enumerate, repopulating
+    /// the in-memory id index.
+    ///
+    /// This is the swap-in half of Tomcat's `PersistentManager` behaviour: a
+    /// manager calls it once at startup so a process restart does not lose
+    /// sessions held by a durable store ([`FileSessionStore`], a JDBC store,
+    /// …). It returns the number of sessions loaded into the index.
+    ///
+    /// Backends that cannot enumerate themselves (e.g. [`RedisSessionStore`],
+    /// which expires keys via TTL) return
+    /// [`tomcatrs_core::Error::Other`]`("load_all not supported …")` from
+    /// [`SessionStore::load_all`]; `reload_all` treats that specific error as
+    /// "nothing to reload" and returns `Ok(0)` rather than propagating it, so
+    /// it is always safe to call regardless of the configured store.
+    ///
+    /// [`FileSessionStore`]: crate::FileSessionStore
+    /// [`RedisSessionStore`]: crate::RedisSessionStore
+    pub async fn reload_all(&self) -> tomcatrs_core::Result<usize> {
+        let sessions = match self.store.load_all().await {
+            Ok(sessions) => sessions,
+            // The store does not support enumeration: nothing to reload.
+            Err(tomcatrs_core::Error::Other(msg)) if msg.contains("load_all not supported") => {
+                debug!("reload_all: store does not support enumeration; skipping");
+                return Ok(0);
+            }
+            Err(e) => return Err(e),
+        };
+
+        let mut index = self.index.lock();
+        for session in &sessions {
+            index.insert(session.id.clone());
+        }
+        let count = sessions.len();
+        drop(index);
+        debug!(count, "reloaded sessions from store");
+        Ok(count)
+    }
+
+    /// Persist **every** session currently tracked by this manager back to the
+    /// store, returning the number persisted.
+    ///
+    /// This is the swap-out half of `PersistentManager`: call it on shutdown
+    /// so in-memory state reaches a durable backend before the process exits.
+    ///
+    /// The manager has no generic way to enumerate live `SessionData`, so it
+    /// walks its in-memory id index, (re)loads each session from the store and
+    /// writes it straight back. For a [`MemorySessionStore`] this is a
+    /// round-trip through the same map; the operation is most useful when the
+    /// manager sits in front of a store whose writes are buffered or when an
+    /// index entry needs its `last_accessed` flushed. Ids whose session has
+    /// already vanished from the store are pruned from the index.
+    ///
+    /// Note: a more typical deployment persists by configuring the manager
+    /// with a durable store from the start, in which case every `save` is
+    /// already durable and `persist_all` is a no-op safety net.
+    pub async fn persist_all(&self) -> tomcatrs_core::Result<usize> {
+        let candidates: Vec<String> = self.index.lock().iter().cloned().collect();
+        let mut persisted = 0usize;
+        for id in candidates {
+            match self.store.load(&id).await? {
+                Some(session) => {
+                    self.store.save(session).await?;
+                    persisted += 1;
+                }
+                None => {
+                    // Already gone: keep the index from carrying a dead id.
+                    self.index.lock().remove(&id);
+                }
+            }
+        }
+        debug!(persisted, "persisted tracked sessions to store");
+        Ok(persisted)
+    }
+
     /// Drop index entries whose backing session is gone or expired. Used only
     /// by the memory fast path to keep the index tidy.
     async fn prune_index_against_store(&self, ids: &[String], now: SystemTime) {
@@ -251,5 +325,68 @@ mod tests {
         assert!(manager.find(&live.id).await.unwrap().is_some());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn reload_all_and_persist_all_round_trip_via_file_store() {
+        let dir = std::env::temp_dir().join(format!(
+            "tomcatrs-session-mgr-persist-{}",
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        // First manager: create three sessions on a file store, then "shut
+        // down" by persisting everything it tracked.
+        {
+            let store = crate::FileSessionStore::new(&dir).unwrap();
+            let manager = SessionManager::new(Arc::new(store));
+            for _ in 0..3 {
+                manager.create().await.unwrap();
+            }
+            assert_eq!(manager.tracked_ids(), 3);
+            assert_eq!(manager.persist_all().await.unwrap(), 3);
+        }
+
+        // Second manager over the *same* directory: it starts with an empty
+        // index, and reload_all repopulates it from disk.
+        {
+            let store = crate::FileSessionStore::new(&dir).unwrap();
+            let manager = SessionManager::new(Arc::new(store));
+            assert_eq!(manager.tracked_ids(), 0);
+            let reloaded = manager.reload_all().await.unwrap();
+            assert_eq!(reloaded, 3);
+            assert_eq!(manager.tracked_ids(), 3);
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn reload_all_is_a_noop_for_stores_without_enumeration() {
+        // A store that keeps the default `load_all` (returning "not
+        // supported"): reload_all must treat that as "nothing to reload",
+        // not propagate it as an error.
+        struct NoEnumStore;
+
+        #[async_trait::async_trait]
+        impl SessionStore for NoEnumStore {
+            async fn load(&self, _id: &str) -> tomcatrs_core::Result<Option<SessionData>> {
+                Ok(None)
+            }
+            async fn save(&self, _session: SessionData) -> tomcatrs_core::Result<()> {
+                Ok(())
+            }
+            async fn delete(&self, _id: &str) -> tomcatrs_core::Result<()> {
+                Ok(())
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        let manager = SessionManager::new(Arc::new(NoEnumStore));
+        assert_eq!(manager.reload_all().await.unwrap(), 0);
     }
 }
