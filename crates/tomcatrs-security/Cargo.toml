@@ -19,7 +19,7 @@ thiserror.workspace = true
 sha2 = "0.10"
 md5 = "0.7"
 base64 = "0.22"
-rand = "0.8"
+rand = "0.10"
 quick-xml.workspace = true
 
 [dev-dependencies]
