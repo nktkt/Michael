@@ -519,7 +519,7 @@ impl ClassFile {
 
 /// Whether `descriptor` matches any descriptor in `set`.
 fn is_descriptor(descriptor: &str, set: &[&str]) -> bool {
-    set.iter().any(|d| *d == descriptor)
+    set.contains(&descriptor)
 }
 
 /// Extract every string from a (possibly array, possibly scalar)
@@ -586,7 +586,7 @@ fn parse_constant_pool(c: &mut Cursor<'_>) -> Result<Vec<Constant>> {
             6 => Constant::Double(c.f64()?),    // CONSTANT_Double
             7 => Constant::Class(c.u16()?),     // CONSTANT_Class
             8 => Constant::StringRef(c.u16()?), // CONSTANT_String
-            9 | 10 | 11 => {
+            9..=11 => {
                 // Fieldref / Methodref / InterfaceMethodref: two u16s
                 c.skip(4)?;
                 Constant::Other

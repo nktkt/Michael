@@ -426,11 +426,11 @@ impl DefaultServlet {
         for (name, is_dir, size) in entries {
             let suffix = if is_dir { "/" } else { "" };
             if is_dir {
-                let _ = write!(html, "<li><a href=\"{base}/{name}/\">{name}/</a></li>\n");
+                let _ = writeln!(html, "<li><a href=\"{base}/{name}/\">{name}/</a></li>");
             } else {
-                let _ = write!(
+                let _ = writeln!(
                     html,
-                    "<li><a href=\"{base}/{name}{suffix}\">{name}</a> &mdash; {size} bytes</li>\n"
+                    "<li><a href=\"{base}/{name}{suffix}\">{name}</a> &mdash; {size} bytes</li>"
                 );
             }
         }
@@ -640,10 +640,8 @@ fn etag_matches(header: &str, etag: &str, weak_ok: bool) -> bool {
         let candidate = candidate.trim();
         let cand_is_weak = candidate.starts_with("W/");
         let cand_opaque = candidate.strip_prefix("W/").unwrap_or(candidate);
-        if cand_opaque == our_opaque {
-            if weak_ok || !cand_is_weak {
-                return true;
-            }
+        if cand_opaque == our_opaque && (weak_ok || !cand_is_weak) {
+            return true;
         }
     }
     false

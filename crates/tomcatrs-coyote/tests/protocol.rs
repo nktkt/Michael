@@ -537,13 +537,12 @@ async fn http2_get_request_yields_headers_and_data() {
                         saw_status = true;
                     }
                 }
-                Frame::Data { data, .. } => {
+                Frame::Data { data, .. }
                     if std::str::from_utf8(data.as_ref())
                         .map(|s| s.contains("path=/probe"))
-                        .unwrap_or(false)
-                    {
-                        saw_body = true;
-                    }
+                        .unwrap_or(false) =>
+                {
+                    saw_body = true;
                 }
                 _ => {}
             }

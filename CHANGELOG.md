@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Clippy-cleanup pass across the workspace: applied auto-fixable suggestions
+  (needless borrows, `Default::default()` builder usage, simplifiable
+  `iter().any()` patterns, redundant conversions, derivable `impl`s). Warning
+  count dropped from 69 to 28. Behaviour-preserving — `cargo test` unchanged.
+- README: added status badges (release, license, Rust edition, test count,
+  Tomcat target, Java target) and bumped the announced test count to 848.
+- `webapps/ROOT/index.html`: tagline updated to v1.0.0 and the page now
+  includes quick links to the `/health` and `/manager/text/list` endpoints.
+
 ## [1.0.0] - 2026-05-15
 
 First stable release of the Tomcat-RS Compatibility Runtime. v1.0.0

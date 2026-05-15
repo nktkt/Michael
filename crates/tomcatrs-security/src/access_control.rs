@@ -80,9 +80,7 @@ fn collapse_dot_segments(path: &str) -> Option<String> {
             "" | "." => {}
             ".." => {
                 // Popping an empty stack means climbing above the root.
-                if stack.pop().is_none() {
-                    return None;
-                }
+                stack.pop()?;
             }
             other => stack.push(other),
         }

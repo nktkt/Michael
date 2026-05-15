@@ -33,20 +33,15 @@ pub use catalina_properties::CatalinaProperties;
 pub use web_xml::{FilterDef, FilterMapping, ServletDef, ServletMapping, WebXml};
 
 /// Wire protocol spoken by a [`ConnectorConfig`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Protocol {
     /// HTTP/1.1 — the default Coyote connector protocol.
+    #[default]
     Http11,
     /// HTTP/2 (typically negotiated over TLS via ALPN).
     Http2,
     /// Apache JServ Protocol, used behind a fronting `httpd`/`nginx`.
     Ajp,
-}
-
-impl Default for Protocol {
-    fn default() -> Self {
-        Protocol::Http11
-    }
 }
 
 impl Protocol {

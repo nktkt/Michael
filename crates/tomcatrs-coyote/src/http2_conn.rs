@@ -127,15 +127,14 @@ impl Http2Settings {
     fn apply(&mut self, id: u16, value: u32) -> std::result::Result<(), Http2Error> {
         match id {
             settings_ids::HEADER_TABLE_SIZE => self.header_table_size = value,
-            settings_ids::ENABLE_PUSH => {
+            settings_ids::ENABLE_PUSH
                 // The server never pushes, but the client may only send 0 or 1.
-                if value > 1 {
+                if value > 1 => {
                     return Err(Http2Error::connection(
                         error_codes::PROTOCOL_ERROR,
                         "ENABLE_PUSH must be 0 or 1",
                     ));
                 }
-            }
             settings_ids::MAX_CONCURRENT_STREAMS => self.max_concurrent_streams = value,
             settings_ids::INITIAL_WINDOW_SIZE => {
                 if value as i64 > MAX_WINDOW {
@@ -1650,10 +1649,8 @@ mod tests {
                             saw_status_200 = true;
                         }
                     }
-                    Frame::Data { data, .. } => {
-                        if data.as_ref() == b"path=/" {
-                            saw_body = true;
-                        }
+                    Frame::Data { data, .. } if data.as_ref() == b"path=/" => {
+                        saw_body = true;
                     }
                     _ => {}
                 }

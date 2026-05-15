@@ -152,7 +152,7 @@ impl RegistrationPlan {
             .enumerate()
             .map(|(i, s)| planned_servlet(s, i))
             .collect();
-        servlets.sort_by(|a, b| servlet_order_key(a).cmp(&servlet_order_key(b)));
+        servlets.sort_by_key(servlet_order_key);
 
         let filters: Vec<PlannedFilter> = web
             .filters

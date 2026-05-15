@@ -38,7 +38,7 @@ fn collect_attrs(start: &BytesStart<'_>) -> Result<Vec<(String, String)>> {
     for attr in start.attributes() {
         let attr =
             attr.map_err(|e| Error::config(format!("malformed attribute in server.xml: {e}")))?;
-        let key = local_name(attr.key.into());
+        let key = local_name(attr.key);
         let value = attr_value(&attr)?;
         out.push((key, value));
     }

@@ -1355,7 +1355,10 @@ mod tests {
     fn huffman_table_is_well_formed_and_prefix_free() {
         // Every code must fit within its declared bit length.
         for (sym, &(code, len)) in huffman::TABLE.iter().enumerate() {
-            assert!(len >= 5 && len <= 30, "sym {sym}: implausible length {len}");
+            assert!(
+                (5..=30).contains(&len),
+                "sym {sym}: implausible length {len}"
+            );
             assert_eq!(
                 code >> len,
                 0,

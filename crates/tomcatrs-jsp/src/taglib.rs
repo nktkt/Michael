@@ -230,7 +230,7 @@ fn parse_attribute(reader: &mut Reader<&[u8]>) -> Result<TagAttribute> {
                 "required" => attr.required = read_bool(reader, "required")?,
                 "rtexprvalue" => attr.rtexprvalue = read_bool(reader, "rtexprvalue")?,
                 "type" => attr.type_ = Some(read_text(reader, "type")?),
-                other => skip(reader, &other)?,
+                other => skip(reader, other)?,
             },
             Event::End(e) if local(e.name()) == "attribute" => break,
             Event::Eof => return Err(Error::config("unexpected EOF inside <attribute> in tld")),
@@ -259,7 +259,7 @@ fn parse_variable(reader: &mut Reader<&[u8]>) -> Result<TagVariable> {
                         var.name = from;
                     }
                 }
-                other => skip(reader, &other)?,
+                other => skip(reader, other)?,
             },
             Event::End(e) if local(e.name()) == "variable" => break,
             Event::Eof => return Err(Error::config("unexpected EOF inside <variable> in tld")),
@@ -294,7 +294,7 @@ fn parse_tag(reader: &mut Reader<&[u8]>) -> Result<TagDef> {
                         element = %other,
                         "unmodelled element inside <tag>; skipping"
                     );
-                    skip(reader, &other)?;
+                    skip(reader, other)?;
                 }
             },
             Event::End(e) if local(e.name()) == "tag" => break,
@@ -321,7 +321,7 @@ fn parse_function(reader: &mut Reader<&[u8]>) -> Result<FunctionDef> {
                 "function-signature" => {
                     func.function_signature = read_text(reader, "function-signature")?
                 }
-                other => skip(reader, &other)?,
+                other => skip(reader, other)?,
             },
             Event::End(e) if local(e.name()) == "function" => break,
             Event::Eof => return Err(Error::config("unexpected EOF inside <function> in tld")),
@@ -343,7 +343,7 @@ fn parse_listener(reader: &mut Reader<&[u8]>) -> Result<String> {
         {
             Event::Start(s) => match local(s.name()).as_str() {
                 "listener-class" => class = read_text(reader, "listener-class")?,
-                other => skip(reader, &other)?,
+                other => skip(reader, other)?,
             },
             Event::End(e) if local(e.name()) == "listener" => break,
             Event::Eof => return Err(Error::config("unexpected EOF inside <listener> in tld")),

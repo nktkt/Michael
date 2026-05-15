@@ -17,8 +17,8 @@
     .tagline { color: #555; margin-top: 0; }
     .status {
       display: inline-block;
-      background: #fff3cd;
-      border: 1px solid #ffe69c;
+      background: #d4edda;
+      border: 1px solid #b6dfc4;
       border-radius: 4px;
       padding: 0.25rem 0.6rem;
       font-size: 0.85rem;
@@ -33,7 +33,7 @@
   <h1>Tomcat-RS Compatibility Runtime &mdash; it works!</h1>
   <p class="tagline">An incremental Rust rewrite of Apache Tomcat.</p>
 
-  <p class="status">v0.1.0 &mdash; early MVP / scaffold. Not production ready.</p>
+  <p class="status">v1.0.0 &mdash; first stable release.</p>
 
   <p>
     If you can read this page, the Rust HTTP/1.1 connector accepted your
@@ -44,9 +44,12 @@
 
   <p>
     Servlet, JSP, and WebSocket application code runs on an embedded JVM
-    reached through the JNI bridge. See the project
+    reached through the JNI bridge (build with <code>--features jvm</code>).
+    Try the operator endpoints: <code><a href="/health">/health</a></code>,
+    <code><a href="/manager/text/list">/manager/text/list</a></code> (loopback-only
+    by default). See the project
     <a href="https://github.com/nktkt/Michael">repository</a> for
-    architecture and roadmap.
+    architecture, roadmap, and release notes.
   </p>
 
   <footer>

@@ -292,7 +292,7 @@ fn parse_property_group(reader: &mut Reader<&[u8]>) -> Result<JspPropertyGroup> 
                         element = %other,
                         "unmodelled element inside <jsp-property-group>; skipping"
                     );
-                    skip(reader, &other)?;
+                    skip(reader, other)?;
                 }
             },
             Event::End(e) if local(e.name()) == "jsp-property-group" => break,
@@ -322,7 +322,7 @@ fn parse_taglib_mapping(reader: &mut Reader<&[u8]>) -> Result<TaglibMapping> {
                 "taglib-location" => {
                     mapping.taglib_location = read_text(reader, "taglib-location")?
                 }
-                other => skip(reader, &other)?,
+                other => skip(reader, other)?,
             },
             Event::End(e) if local(e.name()) == "taglib" => break,
             Event::Eof => return Err(Error::config("unexpected EOF inside <taglib> in web.xml")),
@@ -355,7 +355,7 @@ fn parse_jsp_config_subtree(reader: &mut Reader<&[u8]>) -> Result<JspConfigDescr
                         element = %other,
                         "unmodelled element inside <jsp-config>; skipping"
                     );
-                    skip(reader, &other)?;
+                    skip(reader, other)?;
                 }
             },
             Event::End(e) if local(e.name()) == "jsp-config" => break,

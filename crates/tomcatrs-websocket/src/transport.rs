@@ -810,23 +810,16 @@ fn parse_lenient(buf: &[u8]) -> Result<Option<(Frame, usize)>> {
 ///
 /// Negotiation *parsing* is always performed; this policy only decides what to
 /// do with a parsed offer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CompressionPolicy {
     /// Never accept `permessage-deflate`; every offer is declined. This is the
     /// behaviour when the crate is built without the `deflate` feature, since
     /// no compressor is then available.
+    #[default]
     Disabled,
     /// Accept `permessage-deflate` when offered, using the negotiated
     /// parameters. Only meaningful with the `deflate` feature enabled.
     Enabled,
-}
-
-impl Default for CompressionPolicy {
-    fn default() -> Self {
-        // Default-off: matches the `deflate` Cargo feature being off by
-        // default, so the out-of-the-box build never claims to compress.
-        CompressionPolicy::Disabled
-    }
 }
 
 /// One parsed extension offer from a `Sec-WebSocket-Extensions` header.

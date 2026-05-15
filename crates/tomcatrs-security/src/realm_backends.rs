@@ -96,7 +96,7 @@ impl FileRealm {
                                         "malformed attribute in tomcat-users.xml: {e}"
                                     ))
                                 })?;
-                                if local_name(attr.key.into()) == "rolename" {
+                                if local_name(attr.key) == "rolename" {
                                     let v = attr.unescape_value().map_err(|e| {
                                         Error::config(format!(
                                             "invalid attribute value in tomcat-users.xml: {e}"
@@ -116,7 +116,7 @@ impl FileRealm {
                                         "malformed attribute in tomcat-users.xml: {e}"
                                     ))
                                 })?;
-                                let key = local_name(attr.key.into());
+                                let key = local_name(attr.key);
                                 let value = attr
                                     .unescape_value()
                                     .map_err(|e| {

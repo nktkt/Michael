@@ -310,12 +310,10 @@ fn collect_fields(reader: &mut Reader<&[u8]>, parent: &str) -> Result<Vec<(Strin
                 }
                 depth += 1;
             }
-            Ok(Event::Text(t)) => {
-                if depth == 1 {
-                    if let Some((_, ref mut val)) = current {
-                        let text = t.unescape().map(|c| c.into_owned()).unwrap_or_default();
-                        val.push_str(&text);
-                    }
+            Ok(Event::Text(t)) if depth == 1 => {
+                if let Some((_, ref mut val)) = current {
+                    let text = t.unescape().map(|c| c.into_owned()).unwrap_or_default();
+                    val.push_str(&text);
                 }
             }
             Ok(Event::End(e)) => {

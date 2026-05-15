@@ -2,13 +2,21 @@
 
 *An incremental Rust rewrite of Apache Tomcat that keeps your existing Java WARs running.*
 
+[![Release](https://img.shields.io/github/v/release/nktkt/Michael?label=release&color=brightgreen)](https://github.com/nktkt/Michael/releases/latest)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Rust Edition](https://img.shields.io/badge/rust-2021%2C%201.75%2B-orange)](rust-toolchain.toml)
+[![Tests](https://img.shields.io/badge/tests-848%20passing-success)](#testing)
+[![Tomcat Target](https://img.shields.io/badge/tomcat-11.0.x-yellow)](https://tomcat.apache.org/)
+[![Java](https://img.shields.io/badge/java-17%20%7C%2021-red?logo=openjdk&logoColor=white)](#tomcat--java-targets)
+
 > The GitHub repository for this project is named **Michael**
 > (`https://github.com/nktkt/Michael`). "Tomcat-RS Compatibility Runtime"
 > is the project name; "Michael" is just the repo name.
 
 **Status: v1.0.0 — first stable release.** Production compatibility with stock
 Tomcat 11.0.x is the explicit goal of this line; the runtime is exercised by
-758 passing tests, a differential-testing harness, and a fuzz suite. See
+**848 passing tests** across 32 binaries, a differential-testing harness, a
+fuzz suite, and a security conformance suite. See
 [`docs/release-notes-1.0.0.md`](docs/release-notes-1.0.0.md) for a tour of
 what's new, and the "What's still partial in 1.0.0" section below for honest
 caveats.

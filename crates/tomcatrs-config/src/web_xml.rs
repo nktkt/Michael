@@ -170,7 +170,7 @@ fn parse_init_param(reader: &mut Reader<&[u8]>) -> Result<(String, String)> {
             Event::Start(s) => match local(s.name()).as_str() {
                 "param-name" => name = read_text(reader, "param-name")?,
                 "param-value" => value = read_text(reader, "param-value")?,
-                other => skip(reader, &other)?,
+                other => skip(reader, other)?,
             },
             Event::End(e) if local(e.name()) == "init-param" => break,
             Event::Eof => {
@@ -217,7 +217,7 @@ fn parse_servlet(reader: &mut Reader<&[u8]>) -> Result<ServletDef> {
                         element = %other,
                         "unmodelled element inside <servlet>; skipping"
                     );
-                    skip(reader, &other)?;
+                    skip(reader, other)?;
                 }
             },
             Event::End(e) if local(e.name()) == "servlet" => break,
@@ -251,7 +251,7 @@ fn parse_filter(reader: &mut Reader<&[u8]>) -> Result<FilterDef> {
                         element = %other,
                         "unmodelled element inside <filter>; skipping"
                     );
-                    skip(reader, &other)?;
+                    skip(reader, other)?;
                 }
             },
             Event::End(e) if local(e.name()) == "filter" => break,
@@ -275,7 +275,7 @@ fn parse_servlet_mapping(reader: &mut Reader<&[u8]>) -> Result<ServletMapping> {
             Event::Start(s) => match local(s.name()).as_str() {
                 "servlet-name" => m.servlet_name = read_text(reader, "servlet-name")?,
                 "url-pattern" => m.url_pattern = read_text(reader, "url-pattern")?,
-                other => skip(reader, &other)?,
+                other => skip(reader, other)?,
             },
             Event::End(e) if local(e.name()) == "servlet-mapping" => break,
             Event::Eof => {
@@ -302,7 +302,7 @@ fn parse_filter_mapping(reader: &mut Reader<&[u8]>) -> Result<FilterMapping> {
             Event::Start(s) => match local(s.name()).as_str() {
                 "filter-name" => m.filter_name = read_text(reader, "filter-name")?,
                 "url-pattern" => m.url_pattern = read_text(reader, "url-pattern")?,
-                other => skip(reader, &other)?,
+                other => skip(reader, other)?,
             },
             Event::End(e) if local(e.name()) == "filter-mapping" => break,
             Event::Eof => {
@@ -328,7 +328,7 @@ fn parse_listener(reader: &mut Reader<&[u8]>) -> Result<String> {
         {
             Event::Start(s) => match local(s.name()).as_str() {
                 "listener-class" => class = read_text(reader, "listener-class")?,
-                other => skip(reader, &other)?,
+                other => skip(reader, other)?,
             },
             Event::End(e) if local(e.name()) == "listener" => break,
             Event::Eof => return Err(Error::config("unexpected EOF inside <listener> in web.xml")),
@@ -355,7 +355,7 @@ fn parse_welcome_files(reader: &mut Reader<&[u8]>) -> Result<Vec<String>> {
                         files.push(f);
                     }
                 }
-                other => skip(reader, &other)?,
+                other => skip(reader, other)?,
             },
             Event::End(e) if local(e.name()) == "welcome-file-list" => break,
             Event::Eof => {
