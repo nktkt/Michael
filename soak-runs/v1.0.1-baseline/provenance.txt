@@ -1,0 +1,42 @@
+=== git ===
+rev: d15073c0623fc04738cef08c84d534b0c07fb7f2
+branch: main
+status:
+ M Cargo.lock
+ M crates/tomcatrs-servlet-bridge/Cargo.toml
+ M crates/tomcatrs-servlet-bridge/java/jakarta-stubs/jakarta/servlet/ServletContext.java
+ M crates/tomcatrs-servlet-bridge/java/org/apache/tomcatrs/bridge/TomcatRsServletContext.java
+ M crates/tomcatrs-servlet-bridge/src/jni.rs
+ M crates/tomcatrs-servlet-bridge/src/sci.rs
+ M crates/tomcatrs-webapp/src/annotations.rs
+ M crates/tomcatrs-webapp/src/lib.rs
+ M crates/tomcatrs-webapp/src/scanner.rs
+ D tests/fixtures/real-wars/sci-fixture/WEB-INF/classes/META-INF/services/jakarta.servlet.ServletContainerInitializer
+?? crates/tomcatrs-servlet-bridge/java/jakarta-stubs/jakarta/servlet/FilterRegistration.java
+?? crates/tomcatrs-servlet-bridge/java/jakarta-stubs/jakarta/servlet/Registration.java
+?? crates/tomcatrs-servlet-bridge/java/jakarta-stubs/jakarta/servlet/ServletRegistration.java
+?? crates/tomcatrs-servlet-bridge/java/org/apache/tomcatrs/bridge/NativeServletContext.java
+?? soak-runs/
+
+=== machine ===
+Darwin naokinoMacBook-Pro.local 25.3.0 Darwin Kernel Version 25.3.0: Wed Jan 28 20:56:42 PST 2026; root:xnu-12377.91.3~2/RELEASE_ARM64_T8142 arm64
+
+=== rust toolchain ===
+rustc 1.95.0 (59807616e 2026-04-14)
+cargo 1.95.0 (f2d3ce0bd 2026-03-21)
+
+=== build profile ===
+binary: Tomcat-RS Compatibility Runtime v1.0.0
+soak  : tomcatrs-soak 1.0.0
+
+=== run config ===
+command:
+  ./target/release/tomcatrs-soak --target "http://127.0.0.1:$PORT/" \
+    --duration 600 --warmup 60 --concurrency 32 --rps 200 \
+    --target-pid "$SERVER_PID" \
+    --report soak-runs/v1.0.1-baseline/soak-report.json
+
+server command:
+  ./target/release/tomcatrs run --port $PORT --app-base $TMPDIR/webapps --log-level warn
+
+started at unix: 1778862411 (UTC: 2026年 5月15日 金曜日 16時26分51秒 UTC)

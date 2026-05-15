@@ -1,0 +1,28 @@
+2026-05-15T16:21:35.480115Z  INFO soak run starting target=http://127.0.0.1:55898/ duration_s=600 warmup_s=60 concurrency=32 rps=200 target_pid=Some(81405)
+2026-05-15T16:31:36.497071Z  INFO soak report written path=soak-runs/v1.0.1-baseline/soak-report.json
+
+=== tomcatrs-soak summary ===
+target                 : http://127.0.0.1:55898/
+target pid             : 81405
+duration / warmup      : 600 s / 60 s
+concurrency / rps      : 32 / 200
+requests (total / post): 120200 / 108001
+2xx rate (post-warmup) : 100.000%  (108001/108001 ok)
+
+latency (post-warmup):
+  steady n=108001  p50=   0.30ms  p90=   0.40ms  p99=   2.00ms  p99.9=  20.00ms  max=  59.31ms
+  warmup n= 12199  p50=   0.30ms  p90=   0.40ms  p99=   2.00ms  p99.9=  20.00ms  max=  13.13ms
+  final  n= 12001  p50=   0.20ms  p90=   0.40ms  p99=   1.00ms  p99.9=  10.00ms  max=  26.12ms
+
+process samples:
+  baseline (median over warmup) : rss=4032 KiB, threads=24
+  final    (median over last 60s): rss=2592 KiB, threads=24
+  delta                          : rss=-35.71%, threads=+0
+
+=== assertions ===
+[OK]   2xx rate >= 99.500%   (actual 100.000%)
+[OK]   p99 latency <= baseline x 1.50   (baseline 2.00ms, final 1.00ms, allowed 3.00ms)
+[OK]   RSS growth <= 15.00%   (baseline 4032 KiB, final 2592 KiB, allowed 4637 KiB)
+[OK]   thread growth <= +8   (baseline 24, final 24, allowed <= 32)
+
+overall: [OK] all soak assertions passed

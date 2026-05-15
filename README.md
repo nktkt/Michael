@@ -2,10 +2,11 @@
 
 *An incremental Rust rewrite of Apache Tomcat that keeps your existing Java WARs running.*
 
+[![CI](https://github.com/nktkt/Michael/actions/workflows/ci.yml/badge.svg)](https://github.com/nktkt/Michael/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/nktkt/Michael?label=release&color=brightgreen)](https://github.com/nktkt/Michael/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Rust Edition](https://img.shields.io/badge/rust-2021%2C%201.75%2B-orange)](rust-toolchain.toml)
-[![Tests](https://img.shields.io/badge/tests-848%20passing-success)](#testing)
+[![Tests](https://img.shields.io/badge/tests-877%20passing-success)](#testing)
 [![Tomcat Target](https://img.shields.io/badge/tomcat-11.0.x-yellow)](https://tomcat.apache.org/)
 [![Java](https://img.shields.io/badge/java-17%20%7C%2021-red?logo=openjdk&logoColor=white)](#tomcat--java-targets)
 
@@ -15,7 +16,7 @@
 
 **Status: v1.0.0 — first stable release.** Production compatibility with stock
 Tomcat 11.0.x is the explicit goal of this line; the runtime is exercised by
-**848 passing tests** across 32 binaries, a differential-testing harness, a
+**877 passing tests** across 41 binaries, a differential-testing harness, a
 fuzz suite, and a security conformance suite. See
 [`docs/release-notes-1.0.0.md`](docs/release-notes-1.0.0.md) for a tour of
 what's new, and the "What's still partial in 1.0.0" section below for honest
@@ -309,6 +310,44 @@ A few areas reach v1.0.0 scope but are honestly not feature-complete:
   that is an explicit non-goal for 1.0 (see "Future" in `ROADMAP.md`).
 
 ---
+
+## Production readiness
+
+A few orthogonal pieces back the "production-compatibility" claim. These are
+the artefacts to point at when you need to convince yourself (or someone
+above you) that this isn't just a hobby Servlet shim:
+
+- **End-to-end JVM bridge test** — `crates/tomcatrs-servlet-bridge/tests/end_to_end.rs`
+  drives a real Java `HttpServlet.service(req, res)` from the Rust side via
+  JNI, with a freshly-booted embedded JVM and a per-webapp `URLClassLoader`,
+  and asserts the response status / body / `Content-Type` round-trip cleanly.
+  This is the closest thing to "a real WAR runs" we can encode in `cargo test`.
+- **Soak / load-stability evidence** — see [`soak-runs/v1.0.1-baseline/`](soak-runs/v1.0.1-baseline/)
+  for a checked-in 10-minute soak: 108 001 requests at 200 rps, 100 %
+  2xx, p99 1 ms, RSS held flat, threads held flat. Future regression hunts
+  diff against this report. The harness lives in `crates/tomcatrs-soak/`
+  and is documented in [`docs/soak-testing.md`](docs/soak-testing.md);
+  `scripts/long-soak.sh` is the 24-hour wrapper for release-candidate
+  validation.
+- **Security model + threat surface** — see [`SECURITY.md`](SECURITY.md)
+  for the disclosure policy, the supported-version matrix, the deployment
+  posture (especially the "AJP requires `secret` on a trusted network"
+  contract), and the per-CVE-class checklist (URI hardening, HPACK bombs,
+  request limits, the security-headers valve, Ghostcat-style AJP misuse).
+- **`tomcatrs preflight`** — the CLI ships a `preflight` subcommand that
+  runs production-readiness checks against a `server.xml` without starting
+  the server. Each check prints one `[OK] / [WARN] / [FAIL]: <message>` line
+  and a non-zero exit code on any failure (or, with `--strict`, on any
+  warning). Wire it into a CI gate before a deploy:
+
+  ```sh
+  tomcatrs preflight --config /etc/tomcatrs/server.xml --strict
+  ```
+
+- **CI status** — every push to `main` and every PR runs the full workspace
+  build + test suite, the security workflow, and `cargo deny`. The badge at
+  the top of this README links to the live job; the workflow definitions
+  live under [`.github/workflows/`](.github/workflows/).
 
 ## Roadmap
 

@@ -118,6 +118,83 @@ use the long-soak default of 500 rps; expect threads to settle a few above
 this figure (one per inbound connection that the accept loop holds open) and
 RSS to climb during warmup but plateau by the end of the first minute.
 
+## Baseline results
+
+The first checked-in soak run lives at
+[`soak-runs/v1.0.1-baseline/`](../soak-runs/v1.0.1-baseline/). It is the
+reference point future regression hunts should diff against. The exact
+invocation, after `cargo build --release -p tomcatrs-cli -p tomcatrs-soak`
+and starting the server on a free port `$PORT` with a temp `app-base` and
+PID `$SERVER_PID`:
+
+```sh
+./target/release/tomcatrs-soak \
+    --target "http://127.0.0.1:$PORT/" \
+    --duration 600 --warmup 60 --concurrency 32 --rps 200 \
+    --target-pid "$SERVER_PID" \
+    --report soak-runs/v1.0.1-baseline/soak-report.json
+```
+
+10 minutes of sustained 200 rps against a release build of `tomcatrs` v1.0.0
+serving the static `webapps/ROOT/index.html` on an Apple-silicon laptop:
+
+| Dimension | Baseline (warmup median) | Final (last-60 s median) | Delta |
+|---|---|---|---|
+| Duration | 600 s | — | — |
+| Concurrency | 32 | — | — |
+| Open-loop target | 200 rps | actual ~200 rps (108 001 requests over 540 s of post-warmup window) | — |
+| 2xx rate | — | 100.000 % (108 001 / 108 001) | — |
+| Latency p50 | 0.30 ms | 0.20 ms | −33 % |
+| Latency p99 | 2.00 ms | 1.00 ms | −50 % |
+| Latency p99.9 | 20.00 ms | 10.00 ms | −50 % |
+| RSS | 4 032 KiB | 2 592 KiB | −35.71 % |
+| Live thread count | 24 | 24 | +0 |
+
+All four assertions held:
+
+```
+[OK]   2xx rate >= 99.500%   (actual 100.000%)
+[OK]   p99 latency <= baseline x 1.50   (baseline 2.00ms, final 1.00ms, allowed 3.00ms)
+[OK]   RSS growth <= 15.00%   (baseline 4032 KiB, final 2592 KiB, allowed 4637 KiB)
+[OK]   thread growth <= +8   (baseline 24, final 24, allowed <= 32)
+```
+
+The `server.log` is empty: at `--log-level warn` the runtime emitted no
+warnings or errors for the entire 10 minutes — i.e., no `recv` reset, no
+mapper miss, no connection cap rejection.
+
+This is the **v1.0.1 baseline**. Future PRs that touch the hot connector or
+mapper paths should re-run the same command and diff
+`final_process.rss_kib`, `final_latency.p99_us`, `final_latency.p99_9_us`,
+and `final_process.threads` against this report. Any regression that crosses
+the 15 % RSS / +8 threads / 50 % p99 thresholds will fail the assertion gate
+and the soak's exit code; tighten or document accordingly.
+
+### What 10 minutes does — and does not — prove
+
+A clean 600 s soak rules out a large class of leaks:
+
+* fast heap leaks (anything that climbs more than 15 % of baseline inside
+  10 minutes is visible),
+* per-request thread leaks (an accept-loop bug that spawns without joining
+  shows up within seconds),
+* tail-latency cliffs (a regex that backtracks, a lock-contention deadband,
+  or a slow path that's hit on every Nth request).
+
+It does **not** prove the absence of:
+
+* hour-scale leaks (a cache that bounds to 50 MiB and then plateaus would
+  look identical at minute 10 and minute 600),
+* day-scale clock / monotonic-time bugs (an `Instant` arithmetic overflow
+  past 2³² ms ≈ 49.7 days),
+* drift in the JVM bridge under realistic servlet traffic (the soak hits
+  the static handler; servlet WARs exercise a different code path).
+
+For release-candidate validation, run `scripts/long-soak.sh` (24 h default)
+and archive the artefacts under a fresh `soak-runs/<tag>/` directory. The
+10-minute baseline is the *cheap* gate; the 24-hour soak is the
+*sufficient* one.
+
 ## Attributing a regression
 
 Treat each failed assertion as a different category of bug; the runbook is in
