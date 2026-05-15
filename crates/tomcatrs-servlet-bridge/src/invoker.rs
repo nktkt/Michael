@@ -55,7 +55,7 @@
 //!
 //! These call sites are all behind `#[cfg(feature = "jvm")]` and so are *not*
 //! compiled by the default-feature build/test used to verify this module; if a
-//! signature drifts during integration, only [`invoke_impl`] needs touching.
+//! signature drifts during integration, only `invoke_impl` needs touching.
 
 use std::sync::Arc;
 

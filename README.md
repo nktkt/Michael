@@ -6,7 +6,12 @@
 > (`https://github.com/nktkt/Michael`). "Tomcat-RS Compatibility Runtime"
 > is the project name; "Michael" is just the repo name.
 
-**Status: v0.1.0 — early MVP / scaffold. Not production ready.**
+**Status: v1.0.0 — first stable release.** Production compatibility with stock
+Tomcat 11.0.x is the explicit goal of this line; the runtime is exercised by
+758 passing tests, a differential-testing harness, and a fuzz suite. See
+[`docs/release-notes-1.0.0.md`](docs/release-notes-1.0.0.md) for a tour of
+what's new, and the "What's still partial in 1.0.0" section below for honest
+caveats.
 
 ---
 
@@ -54,7 +59,9 @@ binary compatibility with the Java ecosystem is preserved.
 | Jasper / JSP compilation & runtime | | ✅ |
 | Jakarta Expression Language | | ✅ |
 | Java classloader isolation per webapp | | ✅ |
-| WebSocket endpoint invocation | handshake + framing in Rust | endpoint logic ✅ |
+| WebSocket transport | ✅ | endpoint logic ✅ |
+| Manager API / health / JMX bridge / OTel export | ✅ | |
+| Security: auth, realms, constraints, hardening valves | ✅ | |
 
 ---
 
@@ -121,14 +128,16 @@ Michael/
 │   ├── tomcatrs-webapp              # webapp model, deployment, static resources, web.xml binding
 │   ├── tomcatrs-servlet-bridge      # JNI bridge to the embedded JVM (Servlet/JSP/EL execution)
 │   ├── tomcatrs-jsp                 # JSP/Jasper bridge glue and compilation orchestration
-│   ├── tomcatrs-session             # session manager and storage backends (memory/file/cluster)
-│   ├── tomcatrs-security            # request limits, URI hardening, path-traversal defenses
-│   ├── tomcatrs-websocket           # WebSocket handshake and frame codec
-│   ├── tomcatrs-observability       # access logs, metrics, tracing integration
-│   └── tomcatrs-cli                 # `tomcatrs` binary: run / check-config / version
+│   ├── tomcatrs-session             # session manager + memory/file/Redis/JDBC/cluster stores
+│   ├── tomcatrs-security            # auth (BASIC/DIGEST/FORM), realms, constraints, request limits, URI hardening
+│   ├── tomcatrs-websocket           # WebSocket handshake, frame codec, transport, Jakarta bridge
+│   ├── tomcatrs-observability       # access logs, metrics, tracing, health, JMX bridge, OTel export
+│   ├── tomcatrs-cli                 # `tomcatrs` binary: run / check-config / version
+│   └── tomcatrs-compat-tests        # differential test harness against stock Tomcat
 ├── conf/                            # sample server.xml, web.xml, catalina.properties
 ├── webapps/                         # default webapp root (ROOT/)
-├── docs/                            # architecture and compatibility documentation
+├── docs/                            # architecture, compatibility, release notes
+├── fuzz/                            # cargo-fuzz targets for parsers and connectors
 └── tests/                           # compatibility / protocol / security / migration tests
 ```
 
@@ -141,11 +150,12 @@ Michael/
 | `tomcatrs-webapp` | Webapp representation, deployment/auto-deploy, static resource serving, `web.xml` binding. |
 | `tomcatrs-servlet-bridge` | The JNI bridge that boots and talks to the embedded JVM for Servlet/JSP/EL execution. |
 | `tomcatrs-jsp` | JSP/Jasper orchestration glue on the Rust side. |
-| `tomcatrs-session` | Session manager plus pluggable storage backends (in-memory, file, cluster). |
-| `tomcatrs-security` | Security limits and request hardening (path traversal, encoded slash, body/header limits). |
-| `tomcatrs-websocket` | WebSocket upgrade handshake and the frame codec. |
-| `tomcatrs-observability` | Access logging, metrics export, and tracing hooks. |
+| `tomcatrs-session` | Session manager plus pluggable storage backends: memory, file, Redis, JDBC, and clustered (delta / backup). |
+| `tomcatrs-security` | Auth (`BASIC`/`DIGEST`/`FORM`), realms, `<security-constraint>` evaluation, request limits, URI hardening, hardening valves. |
+| `tomcatrs-websocket` | WebSocket upgrade, frame codec, transport (reassembly, control-frame handling, close), and the Jakarta bridge surface. |
+| `tomcatrs-observability` | Access logging, Prometheus metrics, tracing, health adapter, JMX bridge, and OTLP/HTTP export. |
 | `tomcatrs-cli` | The `tomcatrs` command-line binary. |
+| `tomcatrs-compat-tests` | Differential test harness that runs the same WAR on stock Tomcat and Tomcat-RS and diffs the responses. |
 
 ---
 
@@ -190,47 +200,112 @@ requires a JDK (Java 17+) on the build and run hosts:
 cargo build --release -p tomcatrs-servlet-bridge --features jvm
 ```
 
-Without the `jvm` feature, servlet/JSP invocation paths return a
-"bridge not available" result; the Rust connectors, mapper, static handler,
-sessions, security limits, and WebSocket codec all still function.
+Without the `jvm` feature, servlet/JSP invocation paths answer `501 Not
+Implemented` (`NoopServletInvoker`); every other subsystem — HTTP/1.1,
+HTTP/2, AJP, TLS, the mapper, `DefaultServlet`, sessions (including the
+non-JDBC backends), security, WebSocket transport, Manager API, JMX
+bridge, OTel export, and health — runs unmodified.
 
 ---
 
-## What works in v0.1.0
+## What works in v1.0.0
 
-These subsystems are implemented and exercised by tests:
+All of the following are implemented and exercised by the test suite:
 
-- **HTTP/1.1 connector** — request line, headers, chunked bodies, keep-alive.
-- **`server.xml` parsing** — the component tree is parsed and validated.
-- **Lifecycle model** — the `New → … → Destroyed` state machine and ordered
-  startup/shutdown of the component tree.
-- **Mapper / routing** — Host / Context / Wrapper selection from a request URI.
-- **URI hardening** — normalization and rejection of path-traversal and
-  encoded-separator attacks.
-- **Sessions** — session manager with in-memory and file-backed stores.
-- **Access logs** — configurable access log output.
-- **Metrics** — basic counters and timings via the observability crate.
-- **WebSocket** — upgrade handshake and frame codec (encode/decode).
-- **Security limits** — header count/size, request body size, and related caps.
+- **HTTP/1.1 connector** — request line, headers, chunked encode/decode,
+  keep-alive, expect-continue, request limits, timeouts.
+- **HTTP/2 connector** — full RFC 9113 framing, HPACK (RFC 7541) with the
+  static and dynamic table, Huffman, stream multiplexing, flow control,
+  `GOAWAY`/`RST_STREAM` semantics, fuzzed parsers.
+- **AJP/1.3 connector** — `Forward Request` decoding, `Send Headers` /
+  `Send Body Chunk` / `End Response` encoding, with the documented "trusted
+  network only, secret required" deployment posture (Ghostcat-aware).
+- **TLS termination** — `rustls`-backed, ALPN-negotiated h2 / http/1.1,
+  certificate/key loading from `server.xml`, behind the default-on `tls`
+  feature.
+- **`server.xml` / `web.xml` / `context.xml` / `catalina.properties`** —
+  parsed, validated, fed into the component tree.
+- **Lifecycle model** — the `New → Initialized → Starting → Started →
+  Stopping → Stopped → Destroyed` state machine (plus `Failed`), with ordered
+  startup/shutdown of the whole component tree and the background-processing
+  tick.
+- **Mapper / routing** — Host / Context / Wrapper selection with
+  Servlet-spec URL-pattern precedence (exact ➜ longest path-prefix ➜
+  extension ➜ default `/`).
+- **URI hardening** — percent-decoding, dot-segment collapse, path-traversal,
+  encoded-separator, and `WEB-INF` / `META-INF` rejection.
+- **Static serving (`DefaultServlet`)** — conditional GET, ETags,
+  `Last-Modified`, single and multipart byte ranges, welcome files,
+  optional directory listings, MIME typing.
+- **JVM servlet bridge** *(with `--features jvm`)* — embedded JVM, per-webapp
+  classloader hierarchy, JNI-attached worker pool, request/response facades,
+  filter and listener dispatch, async-servlet (`AsyncContext`) support,
+  `ServletContext` registration. Servlets, filters, and listeners declared
+  in `web.xml` or via `@WebServlet` / `@WebFilter` / `@WebListener` execute
+  end to end against the embedded JVM.
+- **Jasper / JSP bridge** — `*.jsp` and `*.jspx` are routed through
+  `org.apache.jasper.servlet.JspServlet`; the precompile path discovers JSPs,
+  mangles servlet class names exactly like `JspC`, drives `JspC` when a
+  Jasper classpath is available, and emits a `web.xml` fragment.
+- **Jakarta Expression Language** — a self-contained Rust evaluator for plain
+  `${...}` / `#{...}` expressions and template interpolation, with the full
+  set of EL coercions; JVM-side EL is still available for JSP/JSF runtime.
+- **Sessions** — `SessionManager` with pluggable stores: in-memory, file,
+  Redis (`--features redis`), JDBC (via a pluggable `JdbcExecutor` trait), and
+  clustered (`DeltaManager` all-to-all and `BackupManager` primary-backup
+  modes) backed by a `ClusterTransport` abstraction.
+- **Security** — `BASIC`, `DIGEST` (with keyed nonces, nonce-count replay
+  defence), and `FORM` (`j_security_check`) authenticators; in-memory,
+  `tomcat-users.xml`-style file, combined, and lock-out realm backends;
+  `<security-constraint>` evaluation with the Servlet-spec aggregation rules;
+  `RemoteAddrValve`, the security-headers valve (HSTS, CSP, frame-options,
+  MIME-sniff guard, referrer policy), and the HTTP-method allow-list valve.
+- **WebSocket transport** — RFC 6455 handshake, frame codec, message
+  reassembly with interleaved control frames, automatic pong, the close
+  handshake, and `permessage-deflate` negotiation.
+- **Manager API** — `/manager/text/list`, `serverinfo`, `sessions`, `reload`,
+  `stop`, `start`, `deploy`, `undeploy`; mounted as a Coyote `Adapter`
+  alongside applications.
+- **JMX bridge** — Rust metrics surfaced as JVM MBeans via a proxy registered
+  at startup, so existing JConsole / VisualVM / APM tooling keeps working.
+- **OpenTelemetry export** — OTLP/HTTP renderer for the metrics registry,
+  with a built-in `POST` to a configured collector.
+- **Health endpoint** — IETF "health-check"-shaped `/health`, `/health/live`,
+  and `/health/ready` served as a Coyote `Adapter`.
+- **Auto-deploy + hot redeploy** — `HostDeployer` and `DeploymentWatcher`
+  scan `appBase` on startup and on a fixed interval, deploy new applications
+  and notice removed ones; the Manager API's `reload` endpoint drives the
+  same path.
+- **Observability** — Common/Combined access logs, Prometheus metrics,
+  `tracing` integration.
+- **Fuzzing harness** — `cargo-fuzz` targets for HTTP/1.1, chunked decode,
+  cookie parsing, URI normalization, HPACK decode, HTTP/2 frames, AJP
+  `Forward Request`, and the access-control matcher.
 
-## What's stubbed / scaffolded
+## What's still partial in 1.0.0
 
-These exist as types and entry points but are **not** functional yet:
+A few areas reach v1.0.0 scope but are honestly not feature-complete:
 
-- **HTTP/2** connector — scaffolded.
-- **AJP** connector — scaffolded.
-- **TLS** termination — scaffolded.
-- **JVM servlet invocation** — bridge scaffold only; needs the `jvm` feature
-  and remaining JNI plumbing.
-- **JSP runtime compilation** (Jasper bridge) — scaffolded.
-- **Clustering / session replication** — scaffolded.
-- **Manager UI / management API** — scaffolded.
+- **Jakarta WebSocket Jakarta-API integration** — the Rust transport is
+  complete and surfaces every `Message` / control frame, but the JNI plumbing
+  that hands those events to a JVM-side `jakarta.websocket` endpoint is the
+  shallow part of the bridge. Tomcat-RS-native WebSocket adapters work; rich
+  `@ServerEndpoint` lifecycle features still defer to a future release.
+- **`DefaultServlet` PUT/DELETE** — `read_only` defaults to `true` and the
+  read paths are spec-complete. Writable mode answers `501 Not Implemented`;
+  full `PUT`/`DELETE` support, including If-Match preconditions for writes,
+  is post-1.0.
+- **JSP runtime compile-on-demand** — Tomcat-RS prefers the precompile-first
+  workflow. On-demand `.jsp` → servlet compilation goes through embedded
+  Jasper on the JVM side; there is no Rust-native JSP compiler yet, and
+  that is an explicit non-goal for 1.0 (see "Future" in `ROADMAP.md`).
 
 ---
 
 ## Roadmap
 
-A ten-milestone path from scaffold to a compatibility-tested runtime:
+Ten milestones took the project from a v0.1.0 scaffold to the v1.0.0
+compatibility-tested runtime described above:
 
 1. **Skeleton + config + lifecycle** — workspace, component model, `server.xml`
    parsing, lifecycle state machine.

@@ -16,8 +16,8 @@
 //!
 //! # Behaviour with the feature enabled
 //!
-//! * **Connection management.** The store holds a [`redis::Client`] plus a
-//!   lazily-initialised [`redis::aio::MultiplexedConnection`]. The multiplexed
+//! * **Connection management.** The store holds a `redis::Client` plus a
+//!   lazily-initialised `redis::aio::MultiplexedConnection`. The multiplexed
 //!   connection is `Clone` and pipelines concurrent commands over a single
 //!   socket, so it acts as a lightweight built-in pool: every `load`/`save`/
 //!   `delete` shares it instead of opening a fresh TCP connection. The
@@ -54,7 +54,7 @@ use crate::{SessionData, SessionStore};
 #[cfg(feature = "redis")]
 const KEY_PREFIX: &str = "tomcatrs:session:";
 
-/// A [`SessionStore`](crate::SessionStore) backed by a Redis server.
+/// A [`crate::SessionStore`] backed by a Redis server.
 ///
 /// Appropriate for multi-node deployments where sessions must be shared across
 /// application instances. See the [module docs](self) for the connection,
@@ -74,7 +74,7 @@ pub struct RedisSessionStore {
     conn: std::sync::Arc<tokio::sync::Mutex<Option<redis::aio::MultiplexedConnection>>>,
 }
 
-/// A [`SessionStore`](crate::SessionStore) backed by a Redis server.
+/// A [`crate::SessionStore`] backed by a Redis server.
 ///
 /// This is the feature-disabled stub: the `redis` cargo feature is off, so the
 /// type carries no state and every operation returns an error directing the

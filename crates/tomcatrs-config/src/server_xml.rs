@@ -511,7 +511,7 @@ fn parse_host_element(reader: &mut Reader<&[u8]>, start: &BytesStart<'_>) -> Res
     Ok(host)
 }
 
-/// Build a [`ContextConfig`] from the attributes of a `<Context>` tag.
+/// Build a [`crate::ContextConfig`] from the attributes of a `<Context>` tag.
 pub(crate) fn parse_context_attrs(start: &BytesStart<'_>) -> Result<crate::ContextConfig> {
     let mut path = String::new();
     let mut doc_base = PathBuf::new();

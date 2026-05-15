@@ -19,16 +19,16 @@ Tomcat `server.xml` can be dropped into `conf/` and used directly.
 | --- | --- | --- |
 | `<Server>` | Supported | Outermost container; `port` and `shutdown` honored. |
 | `<Service>` | Supported | Groups Connectors with one Engine; `name` honored. |
-| `<Connector>` | Partial | HTTP/1.1 connectors are honored; HTTP/2, AJP, and TLS connectors are parsed but not yet functional. |
+| `<Connector>` | Supported | HTTP/1.1, HTTP/2, AJP/1.3, and TLS connectors are all honored. |
 | `<Engine>` | Supported | Top-level container; `name` and `defaultHost` honored. |
-| `<Host>` | Supported | Virtual host; `name`, `appBase`, `autoDeploy` honored. |
-| `<Context>` | Partial | `path` and `docBase` honored; `reloadable` parsed but reload not yet wired. |
-| `<Valve>` | Partial | Access-log valve honored; other valve classes ignored-with-warning. |
-| `<Listener>` | Ignored (warn) | Parsed; lifecycle listeners not yet dispatched. |
-| `<Realm>` | Planned | Recognized; authentication realms not yet implemented. |
-| `<Resources>` | Planned | Recognized; custom resource roots not yet implemented. |
-| `<GlobalNamingResources>` | Ignored (warn) | Parsed; JNDI is out of scope for v0.1.0. |
-| `<Cluster>` | Planned | Recognized; clustering transport is scaffolded only. |
+| `<Host>` | Supported | Virtual host; `name`, `appBase`, `autoDeploy` honored. Hot redeploy via the `DeploymentWatcher`. |
+| `<Context>` | Supported | `path`, `docBase`, and `reloadable` honored; reload wired via the Manager API (`/manager/text/reload`). |
+| `<Valve>` | Partial | Access-log, `RemoteAddrValve`, `SecurityHeadersValve`, and `HttpMethodFilterValve` honored; other Tomcat valve classes still ignored-with-warning. |
+| `<Listener>` | Partial | Parsed; lifecycle listeners declared in `web.xml` and via annotations are dispatched on the JVM side. `server.xml`-level listener classes are still ignored-with-warning. |
+| `<Realm>` | Partial | In-memory, file (`tomcat-users.xml`), combined, lock-out, and JDBC realms are wired; LDAP is post-1.0. |
+| `<Resources>` | Planned | Recognized; custom resource roots are still post-1.0. |
+| `<GlobalNamingResources>` | Ignored (warn) | Parsed; JNDI remains out of scope. |
+| `<Cluster>` | Supported | `DeltaManager` (all-to-all) and `BackupManager` (primary-backup) session replication are honored over a pluggable `ClusterTransport`; a Tribes-compatible TCP/UDP transport is post-1.0. |
 
 ## Common attributes
 
@@ -37,14 +37,14 @@ Tomcat `server.xml` can be dropped into `conf/` and used directly.
 | `port` | `Server`, `Connector` | Supported | Shutdown port and connector listen port. |
 | `shutdown` | `Server` | Supported | Shutdown command string. |
 | `name` | `Service`, `Engine`, `Host` | Supported | Component identity. |
-| `protocol` | `Connector` | Partial | `HTTP/1.1` honored; HTTP/2 and AJP protocols parsed but not functional. |
+| `protocol` | `Connector` | Supported | `HTTP/1.1`, `h2` (HTTP/2), and `AJP/1.3` all honored. |
 | `address` | `Connector` | Supported | Bind address for the connector. |
-| `SSLEnabled` | `Connector` | Planned | Parsed; TLS termination is scaffolded only. |
+| `SSLEnabled` | `Connector` | Supported | TLS termination via `rustls`; ALPN-negotiated `h2` / `http/1.1`. |
 | `defaultHost` | `Engine` | Supported | Host used when the `Host` header matches nothing. |
 | `appBase` | `Host` | Supported | Directory scanned for deployments. |
 | `autoDeploy` | `Host` | Supported | Enables the deployment watcher for the Host. |
 | `docBase` | `Context` | Supported | Application directory or WAR for the Context. |
-| `reloadable` | `Context` | Partial | Parsed; hot-reload on class change is not yet wired. |
+| `reloadable` | `Context` | Supported | Reload driven by the `DeploymentWatcher` and by `/manager/text/reload`. |
 
 ## Behavior on unknown input
 

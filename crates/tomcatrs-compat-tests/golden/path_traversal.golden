@@ -1,0 +1,8 @@
+# GET /../../etc/passwd — the connector's URI normalizer rejects the request
+# before the adapter ever sees it. The response carries the connector's
+# plain-text body, not the adapter's HTML error page.
+status: 400
+present.server:
+present.content-length:
+body.contains: 400
+body.contains: path traversal

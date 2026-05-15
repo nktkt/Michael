@@ -9,7 +9,7 @@
 //! A context is created "empty" (no servlets) and is then *deployed*: its
 //! `WEB-INF/web.xml` deployment descriptor is parsed and wired in.
 //! [`Context::deploy`] is the full per-context step — it opens the on-disk
-//! [`Webapp`](tomcatrs_webapp::Webapp), parses `web.xml` (if present), and calls
+//! [`tomcatrs_webapp::Webapp`], parses `web.xml` (if present), and calls
 //! [`Context::deploy_descriptor`] to populate the context from it:
 //!
 //! * one [`Wrapper`] per `<servlet>`, carrying its `<init-param>`s and

@@ -1151,7 +1151,7 @@ where
     }
 
     /// Read and process more inbound frames specifically so a blocked
-    /// [`write_body`] can observe `WINDOW_UPDATE`s. Returns `false` if the peer
+    /// `write_body` can observe `WINDOW_UPDATE`s. Returns `false` if the peer
     /// closed the connection.
     async fn read_more_for_flow_control(&mut self) -> Result<bool> {
         let mut chunk = [0u8; 8192];

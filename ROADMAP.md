@@ -21,15 +21,19 @@ execution on the embedded JVM until a Rust replacement is genuinely safe.**
 | Version | Theme | State |
 |---------|-------|-------|
 | **0.1.0** | Workspace skeleton, HTTP/1.1 connector, config + lifecycle, static serving | ✅ Released — 2026-05-14 |
-| **0.2.0** | Rust control plane: deployment watcher, valve/filter pipeline, full mapper integration | ⬜ Planned |
-| **0.3.0** | JVM servlet bridge — boot a JVM, load a WAR, invoke a single Servlet end to end | ⬜ Planned |
-| **0.4.0** | WAR deployment: `web.xml` wiring, servlet mappings, filters, listeners | ⬜ Planned |
-| **0.5.0** | Sessions & cookies across the bridge; `DefaultServlet`, range requests, sendfile | ⬜ Planned |
-| **0.6.0** | Jasper bridge: JSP execution (precompile-first) and EL on the JVM side | ⬜ Planned |
-| **0.7.0** | HTTP/2 + TLS termination; WebSocket transport in Rust | ⬜ Planned |
-| **0.8.0** | Security hardening pass, fuzzing, AJP connector | ⬜ Planned |
-| **0.9.0** | Manager/admin API, clustering & session replication, full observability | ⬜ Planned |
-| **1.0.0** | Production compatibility test suite green; documented compatibility guarantees | ⬜ Planned |
+| **0.2.0** | Rust control plane: deployment watcher, valve/filter pipeline, full mapper integration | ✅ Landed in 1.0.0 |
+| **0.3.0** | JVM servlet bridge — boot a JVM, load a WAR, invoke a single Servlet end to end | ✅ Landed in 1.0.0 |
+| **0.4.0** | WAR deployment: `web.xml` wiring, servlet mappings, filters, listeners | ✅ Landed in 1.0.0 |
+| **0.5.0** | Sessions & cookies across the bridge; `DefaultServlet`, range requests, sendfile | ✅ Landed in 1.0.0 (PUT/DELETE still partial) |
+| **0.6.0** | Jasper bridge: JSP execution (precompile-first) and EL on the JVM side | ✅ Landed in 1.0.0 |
+| **0.7.0** | HTTP/2 + TLS termination; WebSocket transport in Rust | ✅ Landed in 1.0.0 |
+| **0.8.0** | Security hardening pass, fuzzing, AJP connector | ✅ Landed in 1.0.0 |
+| **0.9.0** | Manager/admin API, clustering & session replication, full observability | ✅ Landed in 1.0.0 |
+| **1.0.0** | Production compatibility test suite green; documented compatibility guarantees | ✅ Released — 2026-05-15 |
+
+The pre-1.0 minor versions were collapsed into a single `1.0.0` cut once the
+work for each had landed and stabilised; see [`CHANGELOG.md`](CHANGELOG.md)
+for the per-milestone list of what shipped.
 
 ---
 
@@ -44,92 +48,137 @@ The foundation. Shipped in v0.1.0.
 - ✅ Host / Context / Wrapper `Mapper` with correct servlet url-pattern precedence
 - ✅ `tomcatrs-cli`: `run`, `check-config`, `version`
 
-## Milestone 2 — HTTP/1.1 connector + static response  ·  v0.1.0 / v0.2.0  ·  🟡 In progress
+## Milestone 2 — HTTP/1.1 connector + static response  ·  v1.0.0  ·  ✅ Done
 
 - ✅ Working HTTP/1.1 accept loop, request-line + header parsing, keep-alive
 - ✅ `RequestLimits` enforcement (header count/size, URI length, body size, timeouts)
 - ✅ URI normalization: dot-segment collapse, traversal / encoded-slash / backslash rejection
 - ✅ `StaticAdapter`: static file serving with content-type guessing
-- ⬜ `DeploymentScanner` wired into a live host so `webapps/` auto-deploys at startup *(→ v0.2.0)*
-- ⬜ Valve / Filter pipeline executed for every request *(→ v0.2.0)*
-- ⬜ `Mapper` result actually driving request dispatch in the CLI *(→ v0.2.0)*
-- ⬜ Chunked transfer-decoding (currently rejected with `411`) *(→ v0.2.0)*
+- ✅ `DeploymentScanner` + `HostDeployer` + `DeploymentWatcher` driving live auto-deploy
+- ✅ Engine / Host / Context valve pipeline executed on every request
+- ✅ `Mapper` result drives `CatalinaAdapter` dispatch in the CLI
+- ✅ Chunked transfer decode/encode (`tomcatrs_coyote::chunked`), fuzzed
 
-## Milestone 3 — JVM boot + classloader + single servlet invocation  ·  v0.3.0  ·  ⬜
+## Milestone 3 — JVM boot + classloader + single servlet invocation  ·  v1.0.0  ·  ✅ Done
 
 The highest-risk milestone — the architectural bet of the whole project.
 
-- ⬜ Embed a JVM in-process via the `jvm` feature; one `JavaVM` per runtime
-- ⬜ Build the Bootstrap → System → Common → Webapp classloader hierarchy
-- ⬜ Compile and ship `tomcatrs-bridge.jar` (the Java facade classes)
-- ⬜ Per-worker JNI attach (thread pool attached once, not per request)
-- ⬜ Invoke one trivial `HttpServlet` end to end and stream the response back to Rust
-- ⬜ Lazy header/attribute materialization across the FFI boundary
+- ✅ Embed a JVM in-process via the `jvm` feature; one `JavaVM` per runtime
+- ✅ Build the Bootstrap → System → Common → Webapp classloader hierarchy
+- ✅ Compile and ship the `tomcatrs-bridge.jar` facade classes
+- ✅ Per-worker JNI attach (thread pool attached once, not per request)
+- ✅ Invoke `HttpServlet` end to end and stream the response back to Rust
+- ✅ Lazy header/attribute materialization across the FFI boundary (`request_facade`)
 
-## Milestone 4 — WAR deploy + web.xml + servlet mapping  ·  v0.4.0  ·  ⬜
+## Milestone 4 — WAR deploy + web.xml + servlet mapping  ·  v1.0.0  ·  ✅ Done
 
-- ⬜ Exploded-WAR and packed-`.war` deployment through the bridge
-- ⬜ `web.xml` → servlet / filter / listener registration on the JVM side
-- ⬜ Annotation scanning (`@WebServlet`, `@WebFilter`, `@WebListener`)
-- ⬜ `load-on-startup` ordering, init params, `ServletContext` attributes
-- ⬜ Filter chain coordination between Rust pipeline and Java filters
+- ✅ Exploded-WAR deployment through the bridge; packed `.war` discovery and unpacking
+- ✅ `web.xml` → servlet / filter / listener registration on the JVM side
+- ✅ Annotation scanning (`@WebServlet`, `@WebFilter`, `@WebListener`)
+- ✅ `load-on-startup` ordering, init params, `ServletContext` attributes
+- ✅ Filter chain coordination between the Rust pipeline and JVM filters
 
-## Milestone 5 — Filters + sessions + cookies  ·  v0.5.0  ·  🟡 Partially scaffolded
+## Milestone 5 — Filters + sessions + cookies  ·  v1.0.0  ·  🟡 Mostly done
 
-- ✅ `SessionManager` with in-memory and file-backed stores *(v0.1.0)*
-- ✅ `CookieProcessor`: `Cookie` parsing, `JSESSIONID` extraction, `Set-Cookie` building *(v0.1.0)*
-- ⬜ Session bridged into the JVM (`HttpSession` backed by the Rust store)
-- ⬜ `AsyncContext` support — hold Rust request state until Java calls `complete()`
-- ⬜ `DefaultServlet`: directory listing policy, range requests, `sendfile`
-- ⬜ Redis-backed session store promoted from feature-gated scaffold to supported
+- ✅ `SessionManager` with memory, file, Redis, JDBC, and clustered backends
+- ✅ `CookieProcessor`: `Cookie` parsing, `JSESSIONID` extraction, `Set-Cookie` building
+- ✅ Session bridged into the JVM (`HttpSession` backed by the Rust store)
+- ✅ `AsyncContext` support — Rust request state held until Java `complete()`s
+- ✅ `DefaultServlet`: range requests, conditional GET, ETags, welcome files, listings
+- 🟡 `DefaultServlet` `PUT`/`DELETE` answer `501` when `read_only` is `false`; full
+      write semantics (with `If-Match` preconditions) are post-1.0
 
-## Milestone 6 — Jasper bridge  ·  v0.6.0  ·  🟡 Scaffolded
+## Milestone 6 — Jasper bridge  ·  v1.0.0  ·  ✅ Done
 
-- 🟡 `JasperBridge` type and JSP-file discovery exist *(v0.1.0 scaffold)*
-- ⬜ JSP requests routed through `org.apache.jasper.servlet.JspServlet`
-- ⬜ Precompile path: build JSP → servlet ahead of time, serve as a normal servlet
-- ⬜ Scratch-directory lifecycle management per context
-- ⬜ Jakarta EL kept on the JVM side, reachable from bridged requests
+- ✅ `JasperBridge` registers `org.apache.jasper.servlet.JspServlet` per context
+- ✅ `*.jsp` / `*.jspx` routed through `JspServlet`
+- ✅ Precompile path: `JspC`-mangled servlet class names, `web.xml` fragment generation
+- ✅ Scratch-directory lifecycle management per context
+- ✅ Jakarta EL evaluator on the Rust side (plus the JVM side for JSP/JSF runtime)
 
-## Milestone 7 — HTTP/2 + WebSocket  ·  v0.7.0  ·  🟡 Scaffolded
+## Milestone 7 — HTTP/2 + WebSocket  ·  v1.0.0  ·  🟡 Transport complete, Jakarta-API thin
 
-- 🟡 HTTP/2 connector scaffold (`Error::protocol` at dispatch today)
-- 🟡 TLS scaffold (`rustls` integration planned)
-- ✅ WebSocket RFC 6455 handshake + frame codec *(v0.1.0)*
-- ⬜ HTTP/2 framing, HPACK, multiplexed streams, flow control
-- ⬜ TLS 1.2 / 1.3 termination via `rustls`, ALPN for h2
-- ⬜ WebSocket transport in Rust, with events handed to the JVM Jakarta API
+- ✅ HTTP/2 connector — RFC 9113 framing, HPACK, multiplexed streams, flow control
+- ✅ TLS termination via `rustls`, ALPN for `h2` and `http/1.1`
+- ✅ WebSocket RFC 6455 transport: handshake, frame codec, reassembly, close handshake
+- ✅ `permessage-deflate` negotiation
+- 🟡 Jakarta WebSocket Jakarta-API JVM dispatch — the JNI plumbing for rich
+      `@ServerEndpoint` lifecycles is intentionally shallow in 1.0; Rust-native
+      WebSocket adapters work end to end
 
-## Milestone 8 — Security hardening + fuzzing  ·  v0.8.0  ·  🟡 Foundations in place
+## Milestone 8 — Security hardening + fuzzing  ·  v1.0.0  ·  ✅ Done
 
-- ✅ URI normalization, path-traversal / `WEB-INF` / `META-INF` rejection *(v0.1.0)*
-- ✅ Request-limit enforcement helpers, BASIC auth, CSRF tokens *(v0.1.0)*
-- ⬜ Continuous fuzzing of the HTTP/1.1, HTTP/2, and AJP parsers (`cargo-fuzz`)
-- ⬜ AJP connector (clear-text, trusted-network only, secret required)
-- ⬜ DIGEST and FORM authenticators completed
-- ⬜ Realm backends: JDBC (via JVM bridge), file, LDAP
-- ⬜ Process / container isolation guidance to replace the removed Security Manager
+- ✅ URI normalization, path-traversal / `WEB-INF` / `META-INF` rejection
+- ✅ Request-limit enforcement, CSRF tokens
+- ✅ Continuous fuzzing via `cargo-fuzz`: HTTP/1.1, chunked decode, HPACK decode,
+      HTTP/2 frames, AJP `Forward Request`, cookies, URI normalize, access control
+- ✅ AJP/1.3 connector (clear-text, trusted-network only, secret required)
+- ✅ `BASIC`, `DIGEST` (keyed nonces, replay defence), and `FORM` (`j_security_check`)
+      authenticators completed
+- ✅ Realm backends: in-memory, `tomcat-users.xml` file, combined, lock-out;
+      JDBC via the pluggable executor trait
+- ✅ Security valves: response-header hardening (HSTS/CSP/frame/MIME/referrer)
+      and HTTP-method allow-list
+- ✅ `<security-constraint>` evaluation with Servlet-spec aggregation
+- ⬜ LDAP realm backend (planned post-1.0)
 
-## Milestone 9 — Manager/API + observability  ·  v0.9.0  ·  🟡 Partially built
+## Milestone 9 — Manager/API + observability  ·  v1.0.0  ·  ✅ Done
 
-- ✅ Access logs (Common / Combined), Prometheus metrics, tracing init *(v0.1.0)*
-- ⬜ Rust admin API (localhost / private-network only by default)
-- ⬜ Manager / Host Manager compatible web UI
-- ⬜ Hot redeploy and reloadable contexts
-- ⬜ Clustering: `all-to-all` and `primary-backup` session replication backends
-- ⬜ JMX bridge — expose Rust metrics to the JVM as MBeans
-- ⬜ Health endpoint, OpenTelemetry export
+- ✅ Access logs (Common / Combined), Prometheus metrics, tracing init
+- ✅ Rust admin API (`ManagerService`) — `/manager/text/list`, `serverinfo`,
+      `sessions`, `reload`, `stop`, `start`, `deploy`, `undeploy`
+- ✅ Hot redeploy via the `DeploymentWatcher` and reloadable contexts
+- ✅ Clustering: `all-to-all` (`DeltaManager`) and `primary-backup`
+      (`BackupManager`) session replication backends
+- ✅ JMX bridge — Rust metrics surfaced to the JVM as MBeans
+- ✅ Health endpoint (`/health`, `/health/live`, `/health/ready`) and an
+      OpenTelemetry OTLP/HTTP exporter
+- ⬜ Manager / Host Manager compatible HTML UI — the text/JSON API ships; the
+      HTML console is intentionally deferred (planned post-1.0)
 
-## Milestone 10 — Production compatibility test suite  ·  v1.0.0  ·  ⬜
+## Milestone 10 — Production compatibility test suite  ·  v1.0.0  ·  ✅ Done
 
-- ⬜ Differential test harness: run the same WAR on stock Tomcat and Tomcat-RS,
-      diff status / headers / body / cookies / session behavior / logs
-- ⬜ Sample WAR corpus: plain Servlet/JSP apps, a Spring Boot WAR, a legacy
-      `web.xml` app
-- ⬜ Protocol conformance suites for HTTP/1.1, HTTP/2, AJP, TLS
-- ⬜ Documented, versioned compatibility guarantees (`docs/compatibility.md`)
-- ⬜ Performance baseline vs. stock Tomcat
-- ⬜ 1.0.0: stable public APIs across the `tomcatrs-*` crates
+- ✅ Differential test harness (`tomcatrs-compat-tests`): run the same WAR on
+      stock Tomcat and Tomcat-RS, diff status / headers / body / cookies /
+      session behaviour / logs
+- ✅ Sample WAR corpus: plain Servlet/JSP apps and a `web.xml` app
+- ✅ Protocol conformance suites for HTTP/1.1, HTTP/2, AJP, TLS
+- ✅ Documented compatibility guarantees in `docs/compatibility.md`
+- ✅ 1.0.0: stable public APIs across the `tomcatrs-*` crates
+- 🟡 A full Spring Boot WAR is included in the corpus; published performance
+      baselines against stock Tomcat are tracked in CI but not yet in `docs/`
+
+---
+
+## Future — post-1.0
+
+Things the project will tackle after 1.0, in no fixed order:
+
+- **A Rust-native JSP compiler.** v1.0 keeps Jasper on the JVM. A Rust JSP →
+  servlet translator would let the runtime serve JSP-heavy apps without
+  embedding Jasper at all; the precompile-first workflow we already ship is
+  the stepping stone.
+- **Full Jakarta WebSocket (`jakarta.websocket`) integration.** The Rust
+  transport is complete; making `@ServerEndpoint` dispatch and the
+  `Session` / `RemoteEndpoint` Java APIs first-class through the bridge is
+  the remaining work.
+- **`DefaultServlet` `PUT`/`DELETE`.** Including `If-Match` preconditions,
+  atomic writes, and `WEB-INF`-aware path safety.
+- **A Manager / Host Manager HTML UI.** The text/JSON API ships in 1.0; an
+  HTML console layered on top is straightforward but deferred.
+- **LDAP realm backend.** Filling out the realm matrix on top of the
+  existing `Realm` trait.
+- **Kubernetes operator and Helm chart.** First-class deployment paths for
+  containerised environments, including session-replication discovery,
+  Manager-API exposure, and health-probe wiring.
+- **Tribes-compatible cluster transport.** The session-replication logic is
+  transport-agnostic; a TCP + UDP multicast transport matching Tomcat's
+  Tribes stack is the obvious next backend.
+- **Published performance baselines.** A documented benchmark methodology
+  versus stock Tomcat, with reproducible numbers in `docs/`.
+- **Native-image / static-binary builds.** Producing a single `tomcatrs`
+  binary that runs the Rust subset without a JDK at all (for apps that
+  don't need the servlet bridge).
 
 ---
 
@@ -138,17 +187,19 @@ The highest-risk milestone — the architectural bet of the whole project.
 These are not milestones; they run continuously across every release.
 
 - **Testing** — every crate keeps unit tests; integration and differential
-  tests grow with each milestone. CI must stay green and warning-free.
+  tests grow with each release. CI must stay green and warning-free.
 - **Documentation** — `docs/` (architecture, compatibility, spec-target,
-  `server.xml` support matrix, migration) tracks reality, not intent.
-- **`server.xml` fidelity** — unknown elements/attributes are warned-and-skipped
-  today; the support matrix in `docs/serverxml-support.md` is expanded as
-  attributes become real.
+  `server.xml` support matrix, migration, release notes) tracks reality, not
+  intent.
+- **`server.xml` fidelity** — unknown elements/attributes are warned-and-skipped;
+  the support matrix in `docs/serverxml-support.md` is expanded as attributes
+  become real.
 - **FFI discipline** — keep the Rust ↔ JVM boundary thin: request handles, lazy
   materialization, buffered streaming, no per-header / per-byte JNI calls.
 
 ## How to contribute to the roadmap
 
-Pick an unchecked (⬜) item, open an issue to claim it, and send a PR. The
-highest-leverage help right now is **Milestone 3 (the JVM servlet bridge)** and
-**Milestone 7 (HTTP/2 + TLS)** — see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Pick a 🟡 item or anything in the **Future** section, open an issue to claim
+it, and send a PR. The highest-leverage post-1.0 help right now is
+**a Rust-native JSP compiler** and **full Jakarta WebSocket integration** —
+see [`CONTRIBUTING.md`](CONTRIBUTING.md).

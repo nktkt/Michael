@@ -1,0 +1,8 @@
+# HTTP/1.0 is explicitly supported by the parser; GET / behaves the same as
+# under HTTP/1.1.
+status: 200
+header.content-type: text/html; charset=utf-8
+present.server:
+present.content-length:
+body.contains: Tomcat-RS Compatibility Runtime
+body.len_ge: 200

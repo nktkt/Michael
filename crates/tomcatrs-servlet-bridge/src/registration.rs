@@ -55,7 +55,7 @@
 //! feature-independent. [`WebappRegistrar::register`] does the real JNI work
 //! under `--features jvm`; on the default path it records the *intended*
 //! registrations into the [`WebappRuntime`] registries using placeholder
-//! [`ServletInstanceHandle`]s, so the data model, ordering, and registry
+//! [`crate::jvm::ServletInstanceHandle`]s, so the data model, ordering, and registry
 //! plumbing are all exercised by `cargo test` with no JDK installed.
 
 use std::collections::HashMap;

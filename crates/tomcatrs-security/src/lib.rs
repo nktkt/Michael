@@ -13,7 +13,7 @@
 //!
 //! # Modules
 //!
-//! * [`realm`] — the [`Realm`](realm::Realm) authentication abstraction and a
+//! * [`realm`] — the [`realm::Realm`] authentication abstraction and a
 //!   fully-working in-memory implementation that stores salted password
 //!   hashes.
 //! * [`auth_basic`] — a complete HTTP `BASIC` authenticator.

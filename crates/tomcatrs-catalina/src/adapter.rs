@@ -18,7 +18,7 @@
 //!    worked. The JVM-bridge agent will later replace this branch with a real
 //!    servlet invocation.
 //! 2. **No servlet, but a context owns the URL.** The request is served as a
-//!    static file out of the context's [`doc_base`](Context::doc_base), exactly
+//!    static file out of the context's `doc_base`, exactly
 //!    as Tomcat's `DefaultServlet` would. The static-serving helper lives in
 //!    this module ([`serve_static`]).
 //! 3. **Nothing matched.** A `404 Not Found` is returned with an

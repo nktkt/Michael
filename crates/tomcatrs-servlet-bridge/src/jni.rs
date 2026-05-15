@@ -9,7 +9,7 @@
 //! ## Lazy materialization in practice
 //!
 //! Each native takes a `jlong nativeRequestId` / `nativeResponseId`, looks the
-//! handle up in the [`HANDLE_REGISTRY`], and returns *only* the one value
+//! handle up in the `HANDLE_REGISTRY`, and returns *only* the one value
 //! asked for. A header that the servlet never reads never crosses JNI.
 //!
 //! ## The handle registry
@@ -17,7 +17,7 @@
 //! The connector / dispatch layer parses a request in Rust, builds a
 //! [`RequestHandle`] / [`ResponseHandle`] pair, and *registers* them here under
 //! their `nativeRequestId` / `nativeResponseId` before crossing into Java. The
-//! registry — [`HANDLE_REGISTRY`] — is a process-global `DashMap`. Its
+//! registry — `HANDLE_REGISTRY` — is a process-global `DashMap`. Its
 //! `register_*` / `unregister_*` / `lookup_*` API is plain Rust and is
 //! available **with or without** the `jvm` feature, so non-JNI code can
 //! populate and drain it and so its logic stays unit-testable on a host with no

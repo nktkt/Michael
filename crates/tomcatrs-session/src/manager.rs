@@ -21,7 +21,7 @@ use crate::{generate_session_id, MemorySessionStore, SessionData, SessionStore};
 /// [`SessionStore`] deliberately exposes no `list` operation, so the manager
 /// cannot enumerate a backend generically. To make [`reap_expired`] work for
 /// *any* backend, the manager keeps an **in-memory index** of the ids it has
-/// created or looked up ([`SessionManager::index`]). `reap_expired` walks that
+/// created or looked up (`SessionManager::index`). `reap_expired` walks that
 /// index, loads each session, and deletes the expired ones.
 ///
 /// As an optimisation, when the underlying store is a [`MemorySessionStore`]

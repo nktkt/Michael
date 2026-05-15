@@ -1,0 +1,6 @@
+# A request with a header field over `max_header_size` (default 8192) is
+# rejected by the connector with a 431.
+status: 431
+present.server:
+present.content-length:
+body.contains: Request Header Field Too Large

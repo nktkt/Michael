@@ -24,3 +24,5 @@ quick-xml.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }
+md5 = "0.7"
+base64 = "0.22"

@@ -24,11 +24,12 @@
 //! | `<mount>/deploy?path=/foo&war=...`    | POST   | Record intent, re-run host scanner.      |
 //! | `<mount>/undeploy?path=/foo`          | POST   | Remove a context from its host.          |
 //! | `<mount>/health`                      | GET    | Trivial liveness probe.                  |
+//! | `<mount>/html`                        | GET    | Minimal HTML operator console.           |
 //!
 //! Anything else under the mount path returns `404` with a small JSON error
 //! body. A full WAR upload pipeline for `/deploy` is future work — for now the
 //! endpoint logs the requested parameters and re-runs the host's
-//! [`HostDeployer`](crate::deployer::HostDeployer) so that an operator who has
+//! [`crate::deployer::HostDeployer`] so that an operator who has
 //! already dropped an exploded webapp into the host's `app_base` can pick it
 //! up without restarting the server.
 //!
@@ -66,6 +67,7 @@ use tomcatrs_security::auth_basic::BasicAuthenticator;
 use tomcatrs_security::realm::Realm;
 
 use crate::deployer::HostDeployer;
+use crate::manager_ui::ManagerHtmlPage;
 use crate::server::Server;
 
 /// Default URL mount point for the manager service.
@@ -272,8 +274,14 @@ impl ManagerService {
             ("POST", "deploy") => self.handle_deploy(&query),
             ("POST", "undeploy") => self.handle_undeploy(&query),
             ("GET", "health") => plain_text(200, "200 OK\n"),
+            ("GET", "html") => self.handle_html(),
             _ => not_found(&req.path),
         }
+    }
+
+    /// Render the minimal HTML operator page; see [`crate::manager_ui`].
+    fn handle_html(&self) -> Response {
+        ManagerHtmlPage::new(Arc::clone(&self.server), self.config.mount_path.clone()).render()
     }
 
     fn handle_list(&self) -> Response {

@@ -15,11 +15,11 @@
 //!                  └─ Wrapper  (wrapper.rs) — a single servlet registration
 //! ```
 //!
-//! [`Mapper`](mapper::Mapper) is the routing component: given a host header and
+//! [`Mapper`] is the routing component: given a host header and
 //! a request URI it resolves the `(Host, Context, Wrapper)` triple exactly the
 //! way Tomcat's `org.apache.catalina.mapper.Mapper` does — exact host/alias
 //! match with a `default_host` fallback, longest-prefix context-path matching,
-//! and servlet [`UrlPattern`](mapper::UrlPattern) matching with the canonical
+//! and servlet [`UrlPattern`] matching with the canonical
 //! precedence (exact ➜ path-prefix ➜ extension ➜ default).
 //!
 //! # Lifecycle cascade
@@ -62,8 +62,10 @@ pub mod engine;
 pub mod filter;
 pub mod host;
 pub mod manager;
+pub mod manager_ui;
 pub mod mapper;
 pub mod pipeline;
+pub mod redeploy;
 pub mod security_valve;
 pub mod server;
 pub mod service;

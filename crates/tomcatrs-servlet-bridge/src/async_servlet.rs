@@ -60,7 +60,7 @@
 //! 1. Before dispatching, the caller may pre-allocate an [`AsyncContextState`]
 //!    or let the Java `startAsync()` natives create and [`register`] one keyed
 //!    by the request's `native_id`.
-//! 2. After [`crate::invoker::JvmServletInvoker::invoke`] (i.e. after
+//! 2. After [`crate::invoker::JvmServletInvoker`]`::invoke` (i.e. after
 //!    `ServletDispatcher.dispatch` returns), the caller checks
 //!    [`AsyncContextRegistry::lookup`] for the request id. If an entry exists
 //!    and [`AsyncContextState::is_async_started`] is `true`, the servlet went
@@ -274,7 +274,7 @@ struct AsyncInner {
 ///
 /// Cloning shares the same underlying state. The Java `AsyncContext`, the
 /// connector, and any application-spawned thread that holds the `AsyncContext`
-/// all refer to the same [`AsyncInner`].
+/// all refer to the same `AsyncInner`.
 #[derive(Debug, Clone)]
 pub struct AsyncContextState {
     inner: Arc<AsyncInner>,

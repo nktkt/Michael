@@ -89,7 +89,7 @@ fn web_inf_mtime(doc_base: &Path) -> Option<SystemTime> {
 ///
 /// On each tick, if the context is `reloadable`, it stats the `WEB-INF`
 /// directory under the context's document base and compares its mtime against
-/// the value stored in the shared [`ReloadTracker`]. When the mtime changes it
+/// the value stored in the shared `ReloadTracker`. When the mtime changes it
 /// logs an `info` line; performing the actual reload is a later milestone.
 ///
 /// Non-reloadable contexts are inspected but do no work, exactly as in Tomcat.

@@ -139,7 +139,7 @@ impl ElValue {
 
     /// Coerces this value to a Rust [`String`] following EL rules: `null`
     /// becomes the empty string, numbers and booleans use their natural
-    /// rendering, and collections use their [`Display`] form.
+    /// rendering, and collections use their [`std::fmt::Display`] form.
     pub fn coerce_to_string(&self) -> String {
         match self {
             ElValue::Null => String::new(),
@@ -877,7 +877,7 @@ impl Parser {
 pub struct Expression {
     ast: Ast,
     /// The original source body (the part inside `${...}`), kept for
-    /// diagnostics and [`Display`].
+    /// diagnostics and `Display`.
     source: String,
 }
 

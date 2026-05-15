@@ -22,15 +22,15 @@
 //! bridge and treats it as just another servlet:
 //!
 //! * [`JasperBridge::register`] registers `org.apache.jasper.servlet.JspServlet`
-//!   into a context's [`WebappRuntime`] under the `*.jsp` / `*.jspx` mappings,
-//!   mirroring how [`crate`](crate)'s sibling servlet-bridge crate registers
+//!   into a context's [`WebappRuntime`](tomcatrs_servlet_bridge::WebappRuntime) under the `*.jsp` / `*.jspx` mappings,
+//!   mirroring how [`crate`]'s sibling servlet-bridge crate registers
 //!   ordinary `web.xml` servlets — only here the servlet, its class, and its
 //!   init-params are synthesised from [`JspConfig`] rather than parsed from a
 //!   descriptor.
 //! * Once registered, an actual `*.jsp` request needs **no JSP-specific code
 //!   path at all**: it flows through the standard
 //!   [`JvmServletInvoker`](tomcatrs_servlet_bridge::JvmServletInvoker), which
-//!   resolves the `JspServlet` instance from the [`WebappRuntime`] and
+//!   resolves the `JspServlet` instance from the [`WebappRuntime`](tomcatrs_servlet_bridge::WebappRuntime) and
 //!   `service()`s it over JNI. See [`JasperBridge::service_jsp`].
 //!
 //! # Development vs. production
@@ -57,7 +57,7 @@
 //! Like the rest of the bridge, every public item here exists on both feature
 //! paths. Under `--features jvm`, [`JasperBridge::register`] performs the real
 //! JNI registration against the embedded JVM. On the default (no-JVM) build it
-//! records the *intended* registration into the [`WebappRuntime`] registry with
+//! records the *intended* registration into the [`WebappRuntime`](tomcatrs_servlet_bridge::WebappRuntime) registry with
 //! a placeholder handle and logs it — so the data model and registry plumbing
 //! are fully exercised by `cargo test` with no JDK installed.
 
@@ -209,7 +209,7 @@ impl JspConfig {
 /// A `JasperBridge` is cheap to construct and clone; it holds only the
 /// [`JspConfig`] describing how Jasper should be set up. The real work is
 /// [`JasperBridge::register`], which installs `JspServlet` into a context's
-/// [`WebappRuntime`] so that subsequent `*.jsp` requests dispatch through the
+/// [`WebappRuntime`](tomcatrs_servlet_bridge::WebappRuntime) so that subsequent `*.jsp` requests dispatch through the
 /// ordinary servlet path.
 #[derive(Debug, Clone)]
 pub struct JasperBridge {
@@ -253,7 +253,7 @@ impl JasperBridge {
     /// context are served by JVM-hosted Jasper.
     ///
     /// This mirrors the sibling servlet-bridge crate's `web.xml` registration
-    /// path: it ensures a [`WebappRuntime`] exists for the context (creating it
+    /// path: it ensures a [`WebappRuntime`](tomcatrs_servlet_bridge::WebappRuntime) exists for the context (creating it
     /// with `webapp_classpath` as its class path if necessary), then registers
     /// the `JspServlet` instance under the logical name [`JSP_SERVLET_NAME`].
     /// The difference is purely in provenance — the servlet class
@@ -272,14 +272,14 @@ impl JasperBridge {
     ///   class loader inside the JVM, calls `init()` on it with the
     ///   Jasper init-params, and stores the resulting
     ///   [`ServletInstanceHandle`](tomcatrs_servlet_bridge::jvm::ServletInstanceHandle)
-    ///   in the [`WebappRuntime`] servlet registry.
+    ///   in the [`WebappRuntime`](tomcatrs_servlet_bridge::WebappRuntime) servlet registry.
     /// * **default features** — records the *intended* registration into the
-    ///   [`WebappRuntime`] servlet registry with a placeholder handle and logs
+    ///   [`WebappRuntime`](tomcatrs_servlet_bridge::WebappRuntime) servlet registry with a placeholder handle and logs
     ///   it; fully testable with no JDK installed.
     ///
     /// # Errors
     ///
-    /// Returns [`tomcatrs_core::Error::Bridge`] if the [`WebappRuntime`] cannot
+    /// Returns [`tomcatrs_core::Error::Bridge`] if the [`WebappRuntime`](tomcatrs_servlet_bridge::WebappRuntime) cannot
     /// be created or — on the `jvm` build — if any JNI step fails.
     pub fn register(
         &self,
@@ -302,12 +302,12 @@ impl JasperBridge {
     ///
     /// There is intentionally **no JSP-specific request path** in Tomcat-RS.
     /// Once [`JasperBridge::register`] has installed `JspServlet` into a
-    /// context's [`WebappRuntime`], a `*.jsp` request is an ordinary servlet
+    /// context's [`WebappRuntime`](tomcatrs_servlet_bridge::WebappRuntime), a `*.jsp` request is an ordinary servlet
     /// request: the connector resolves it to the `jsp` servlet name (via the
     /// `*.jsp` / `*.jspx` mappings — see [`JasperBridge::is_jsp_path`]) and
     /// hands it to the standard
     /// [`JvmServletInvoker`](tomcatrs_servlet_bridge::JvmServletInvoker), which
-    /// looks the `JspServlet` instance up in the [`WebappRuntime`] and
+    /// looks the `JspServlet` instance up in the [`WebappRuntime`](tomcatrs_servlet_bridge::WebappRuntime) and
     /// `service()`s it over JNI. Jasper itself performs compilation (in
     /// development mode) or class loading (in production) inside that call.
     ///

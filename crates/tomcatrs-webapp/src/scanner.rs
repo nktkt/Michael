@@ -14,7 +14,7 @@
 //! ## `metadata-complete`
 //!
 //! If a webapp's `WEB-INF/web.xml` declares `metadata-complete="true"`, the
-//! Servlet spec says annotations must be ignored entirely. [`Self::scan_webapp`]
+//! Servlet spec says annotations must be ignored entirely. [`ClassScanner::scan_webapp`]
 //! honours this: it returns an empty index without touching the classpath.
 
 use std::fs;

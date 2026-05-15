@@ -14,7 +14,7 @@ use crate::{SessionData, SessionStore};
 /// written to `<dir>/<id>.json`.
 ///
 /// Session ids are validated before being used as file names (see
-/// [`is_safe_id`]) so a hostile id can never escape the configured directory.
+/// `is_safe_id`) so a hostile id can never escape the configured directory.
 #[derive(Debug, Clone)]
 pub struct FileSessionStore {
     dir: PathBuf,

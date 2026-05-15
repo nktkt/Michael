@@ -1,4 +1,4 @@
-//! A TCP-based [`ClusterTransport`] for [`ClusterSessionStore`].
+//! A TCP-based [`ClusterTransport`] for [`crate::store_cluster::ClusterSessionStore`].
 //!
 //! [`TcpClusterTransport`] is the production-shaped sibling of
 //! [`InMemoryClusterTransport`](crate::store_cluster::InMemoryClusterTransport):

@@ -17,7 +17,7 @@
 //! Webapp1 Webapp2  …  WebappN   (one *per deployed web application*)
 //! ```
 //!
-//! The **Common** loader is an ordinary parent-first [`java.net.URLClassLoader`].
+//! The **Common** loader is an ordinary parent-first `java.net.URLClassLoader`.
 //! Each **Webapp** loader, however, is *child-first* (a.k.a. parent-last): when
 //! asked for a class it consults *itself* before delegating to Common, so that
 //! a web application's bundled copy of a library wins over the container's.
@@ -33,7 +33,7 @@
 //! # What this module builds
 //!
 //! [`ClassLoaderFactory`] constructs the JVM-side loaders over JNI. For
-//! **v1.0.0** the webapp loader is materialised as a [`java.net.URLClassLoader`]
+//! **v1.0.0** the webapp loader is materialised as a `java.net.URLClassLoader`
 //! with the correct URL array and parent (Common). That gives correct
 //! *visibility* — the webapp sees its own classes and jars plus everything
 //! Common exposes — but uses standard parent-first delegation. A fully

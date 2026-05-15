@@ -1,0 +1,28 @@
+[package]
+name = "tomcatrs-compat-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Tomcat-RS differential / compatibility test harness — drives a live Tomcat-RS stack and diffs its responses against goldens (and, optionally, an external Apache Tomcat)."
+publish = false
+
+[lib]
+name = "tomcatrs_compat_tests"
+path = "src/lib.rs"
+
+[dependencies]
+tomcatrs-coyote.workspace = true
+tomcatrs-catalina.workspace = true
+tomcatrs-config.workspace = true
+tomcatrs-core.workspace = true
+tomcatrs-observability.workspace = true
+tokio.workspace = true
+bytes.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

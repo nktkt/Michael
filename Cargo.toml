@@ -13,10 +13,12 @@ members = [
     "crates/tomcatrs-websocket",
     "crates/tomcatrs-observability",
     "crates/tomcatrs-cli",
+    "crates/tomcatrs-compat-tests",
+    "crates/tomcatrs-bench",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
@@ -26,17 +28,17 @@ authors = ["The Tomcat-RS Authors"]
 description = "Tomcat-RS Compatibility Runtime — an incremental Rust rewrite of Apache Tomcat"
 
 [workspace.dependencies]
-tomcatrs-core = { path = "crates/tomcatrs-core", version = "0.1.0" }
-tomcatrs-config = { path = "crates/tomcatrs-config", version = "0.1.0" }
-tomcatrs-coyote = { path = "crates/tomcatrs-coyote", version = "0.1.0" }
-tomcatrs-catalina = { path = "crates/tomcatrs-catalina", version = "0.1.0" }
-tomcatrs-webapp = { path = "crates/tomcatrs-webapp", version = "0.1.0" }
-tomcatrs-servlet-bridge = { path = "crates/tomcatrs-servlet-bridge", version = "0.1.0" }
-tomcatrs-jsp = { path = "crates/tomcatrs-jsp", version = "0.1.0" }
-tomcatrs-session = { path = "crates/tomcatrs-session", version = "0.1.0" }
-tomcatrs-security = { path = "crates/tomcatrs-security", version = "0.1.0" }
-tomcatrs-websocket = { path = "crates/tomcatrs-websocket", version = "0.1.0" }
-tomcatrs-observability = { path = "crates/tomcatrs-observability", version = "0.1.0" }
+tomcatrs-core = { path = "crates/tomcatrs-core", version = "1.0.0" }
+tomcatrs-config = { path = "crates/tomcatrs-config", version = "1.0.0" }
+tomcatrs-coyote = { path = "crates/tomcatrs-coyote", version = "1.0.0" }
+tomcatrs-catalina = { path = "crates/tomcatrs-catalina", version = "1.0.0" }
+tomcatrs-webapp = { path = "crates/tomcatrs-webapp", version = "1.0.0" }
+tomcatrs-servlet-bridge = { path = "crates/tomcatrs-servlet-bridge", version = "1.0.0" }
+tomcatrs-jsp = { path = "crates/tomcatrs-jsp", version = "1.0.0" }
+tomcatrs-session = { path = "crates/tomcatrs-session", version = "1.0.0" }
+tomcatrs-security = { path = "crates/tomcatrs-security", version = "1.0.0" }
+tomcatrs-websocket = { path = "crates/tomcatrs-websocket", version = "1.0.0" }
+tomcatrs-observability = { path = "crates/tomcatrs-observability", version = "1.0.0" }
 
 # Shared third-party dependencies
 tokio = { version = "1.38", features = ["full"] }

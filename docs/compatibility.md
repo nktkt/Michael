@@ -45,19 +45,32 @@ Rust; application code execution is JVM.**
 
 ### Rust side
 
-- TLS and TCP accept loops.
-- The Coyote connectors and their HTTP/1.1, HTTP/2, and AJP codecs.
+- TLS termination (`rustls`, ALPN) and TCP accept loops.
+- The Coyote connectors and their HTTP/1.1, HTTP/2 (RFC 9113 + HPACK), and
+  AJP/1.3 codecs.
 - Request-line, header, and cookie parsing and normalization.
 - URI hardening — path-traversal defense, encoded-separator handling,
   canonicalization.
 - The Host/Context/Wrapper mapper.
-- `server.xml`, `web.xml`, and `catalina.properties` parsing.
-- The lifecycle orchestrator and component model.
-- Deployment watching and auto-deploy.
-- Static resource serving.
-- Access logging, metrics, and tracing.
-- Session storage backends (memory, file, cluster).
-- The clustering / replication transport.
+- `server.xml`, `web.xml`, `context.xml`, and `catalina.properties` parsing.
+- The lifecycle orchestrator, component model, and the periodic
+  background-processing tick.
+- Deployment watching and auto-deploy (`HostDeployer`, `DeploymentWatcher`),
+  including hot redeploy through the Manager API.
+- Static resource serving via `DefaultServlet` — conditional GET, ETags,
+  byte ranges, welcome files.
+- Access logging (Common / Combined), Prometheus metrics, `tracing`,
+  the OTLP/HTTP exporter, the health adapter, and the JMX bridge.
+- Session storage backends: memory, file, Redis, JDBC (via the
+  `JdbcExecutor` trait), and clustered (`DeltaManager` / `BackupManager`)
+  over a pluggable `ClusterTransport`.
+- Security: `BASIC`/`DIGEST`/`FORM` authenticators, in-memory / file
+  (`tomcat-users.xml`) / combined / lock-out realm backends,
+  `<security-constraint>` aggregation, `RemoteAddrValve`,
+  `SecurityHeadersValve`, and `HttpMethodFilterValve`.
+- The WebSocket transport: handshake, frame codec, reassembly, control-frame
+  handling, close handshake, and `permessage-deflate` negotiation.
+- The Manager service (`/manager/text/*`).
 
 ### JVM side
 
@@ -72,8 +85,22 @@ Rust; application code execution is JVM.**
 
 ## Honest status note
 
-Compatibility is the **goal**, not yet the **guarantee**. In v0.1.0 the JVM
-bridge is a scaffold: servlet and JSP invocation are not yet wired end to end.
-The Rust-side pieces above (connector, mapper, config, sessions, security,
-WebSocket codec) are implemented and tested. See the README for the full
-"works vs scaffolded" breakdown and the roadmap.
+As of **v1.0.0**, compatibility is the **explicit guarantee for the
+documented surface**: with `--features jvm` enabled, unmodified Servlets,
+filters, listeners, and JSPs from a standard Tomcat 11.0.x WAR execute end
+to end against the embedded JVM. Sessions, cookies, `DefaultServlet`,
+auth (`BASIC`/`DIGEST`/`FORM`), `<security-constraint>` evaluation, the
+Manager text/JSON API, the health endpoint, JMX, and OTel export are all
+wired and tested. The HTTP/1.1, HTTP/2, AJP, TLS, and WebSocket transports
+are implemented in Rust and exercised by both unit tests and a fuzz suite.
+
+The honest caveats — what is intentionally partial in 1.0.0 — are listed in
+the README's "What's still partial in 1.0.0" section and in
+[`release-notes-1.0.0.md`](release-notes-1.0.0.md). The short version:
+Jakarta WebSocket Jakarta-API JVM dispatch is shallow, `DefaultServlet`
+`PUT`/`DELETE` answer `501` until full write semantics land, JSP
+compile-on-demand still uses embedded Jasper (no Rust-native JSP compiler
+yet), there is no LDAP realm, and the Manager HTML UI is not shipped.
+
+See [`release-notes-1.0.0.md`](release-notes-1.0.0.md) for the new-in-1.0.0
+tour, and the roadmap for what comes after.

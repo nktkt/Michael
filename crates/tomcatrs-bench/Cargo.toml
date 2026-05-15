@@ -1,0 +1,42 @@
+[package]
+name = "tomcatrs-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Tomcat-RS benchmarks — Criterion-driven micro-benchmarks for the v1.0.0 baseline"
+publish = false
+
+[dependencies]
+tomcatrs-coyote.workspace = true
+tomcatrs-catalina.workspace = true
+tomcatrs-config.workspace = true
+tokio = { workspace = true, features = ["full"] }
+bytes.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["html_reports", "async_tokio"] }
+
+[[bench]]
+name = "http1_parse"
+harness = false
+
+[[bench]]
+name = "hpack"
+harness = false
+
+[[bench]]
+name = "uri_normalize"
+harness = false
+
+[[bench]]
+name = "mapper"
+harness = false
+
+[[bench]]
+name = "cookie_parse"
+harness = false

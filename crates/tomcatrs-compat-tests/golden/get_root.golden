@@ -1,0 +1,9 @@
+# GET / served by Tomcat-RS with an empty doc base.
+# The static handler falls through to the friendly landing page.
+status: 200
+header.content-type: text/html; charset=utf-8
+present.server:
+present.content-length:
+body.contains: Tomcat-RS Compatibility Runtime
+body.contains: it works
+body.len_ge: 200

@@ -37,7 +37,7 @@
 //!   [`JvmRuntime::with_env`], builds the matching Jakarta event object (e.g.
 //!   `jakarta.servlet.ServletContextEvent`) and invokes the listener method
 //!   (e.g. `contextInitialized`). [`instantiate_listeners`] loads each listener
-//!   class through the webapp's [`ClassLoaderFactory`] and stores the resulting
+//!   class through the webapp's `ClassLoaderFactory` and stores the resulting
 //!   instance handles in the [`ListenerRegistry`].
 //! * **default features** — there is no JVM, so [`ListenerDispatcher::fire`] is
 //!   a *working stub*: it appends every fired event to an interior-mutable log

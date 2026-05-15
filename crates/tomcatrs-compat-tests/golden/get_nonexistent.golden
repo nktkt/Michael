@@ -1,0 +1,10 @@
+# GET /nonexistent — no servlet match, no static file, no welcome page.
+# The adapter renders a Tomcat-style error-report page.
+status: 404
+header.content-type: text/html; charset=utf-8
+present.server:
+present.content-length:
+body.contains: 404
+body.contains: Not Found
+body.contains: /nonexistent
+body.len_ge: 100

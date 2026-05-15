@@ -1,0 +1,9 @@
+# Chunked POST — the connector decodes the whole chunk stream, the adapter
+# then rejects POST with 405. This proves chunked decoding works end-to-end.
+status: 405
+header.content-type: text/html; charset=utf-8
+present.server:
+present.content-length:
+body.contains: 405
+body.contains: Method Not Allowed
+body.len_ge: 100

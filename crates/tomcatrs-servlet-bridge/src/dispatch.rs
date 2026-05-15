@@ -7,7 +7,7 @@
 //! [`tomcatrs_coyote::Request`] and hands it to a
 //! [`tomcatrs_coyote::Adapter`]. This module provides [`BridgeAdapter`], an
 //! `Adapter` implementation that routes each request to a Java servlet (or, on
-//! the no-JVM default build, to the [`NoopServletInvoker`] stub) through the
+//! the no-JVM default build, to the [`NoopServletInvoker`](crate::NoopServletInvoker) stub) through the
 //! bridge.
 //!
 //! ```text
@@ -41,7 +41,7 @@
 //!
 //! * **Lazy materialization.** [`ServletDispatch::dispatch`] turns the coyote
 //!   request into a [`RequestHandle`] carrying only the eagerly-parsed
-//!   [`RequestParts`](crate::request_facade::RequestParts) (method, URI, query,
+//!   [`crate::request_facade::RequestParts`] (method, URI, query,
 //!   headers, …) plus the body as a Rust-side [`RequestBody`] cursor. *Nothing*
 //!   is pushed into the JVM here. When the `jvm` feature is enabled the handle
 //!   is registered in the [`crate::jni`] `HANDLE_REGISTRY` so the Java facade
@@ -65,7 +65,7 @@
 //!
 //! Everything in this module compiles and runs with **default features** (no
 //! JDK). On that path [`ServletDispatch`] is constructed around a
-//! [`NoopServletInvoker`], so [`ServletDispatch::dispatch`] produces a
+//! [`NoopServletInvoker`](crate::NoopServletInvoker), so [`ServletDispatch::dispatch`] produces a
 //! `501 Not Implemented` response, and [`BridgeAdapter`]'s unresolved-route
 //! `404` path is fully exercised.
 
@@ -189,14 +189,14 @@ fn response_from_snapshot(snapshot: ResponseSnapshot) -> tomcatrs_coyote::Respon
 /// cheap to clone: both fields are `Arc`s.
 ///
 /// The invoker is held as an `Arc<dyn ServletInvoker>` so a `ServletDispatch`
-/// works uniformly with the no-JVM [`NoopServletInvoker`] and, once it lands,
+/// works uniformly with the no-JVM [`NoopServletInvoker`](crate::NoopServletInvoker) and, once it lands,
 /// the `jvm`-feature `JvmServletInvoker` — no generic parameter leaks into the
 /// connector wiring.
 ///
 /// The runtime is held as `Option<Arc<JvmRuntime>>`: on the default (no-JVM)
 /// build a [`JvmRuntime`] value cannot exist at all (it is an uninhabited stub
 /// — [`JvmRuntime::start`] never returns `Ok`), and even on the `jvm` build the
-/// [`NoopServletInvoker`] needs no runtime. `None` is therefore a first-class
+/// [`NoopServletInvoker`](crate::NoopServletInvoker) needs no runtime. `None` is therefore a first-class
 /// state, not an error.
 #[derive(Clone)]
 pub struct ServletDispatch {
@@ -208,7 +208,7 @@ impl ServletDispatch {
     /// Create a dispatcher around an invoker and the JVM runtime it targets.
     ///
     /// Use this on the `jvm` build once a [`JvmRuntime`] has been started; for
-    /// the no-JVM [`NoopServletInvoker`](crate::NoopServletInvoker) path use
+    /// the no-JVM [`NoopServletInvoker`](crate::NoopServletInvoker)(crate::NoopServletInvoker) path use
     /// [`ServletDispatch::without_runtime`] instead.
     pub fn new(invoker: Arc<dyn ServletInvoker>, runtime: Arc<JvmRuntime>) -> Self {
         Self {
@@ -220,7 +220,7 @@ impl ServletDispatch {
     /// Create a dispatcher around an invoker with **no** [`JvmRuntime`].
     ///
     /// This is the constructor used by the no-JVM default build (and tests):
-    /// the [`NoopServletInvoker`](crate::NoopServletInvoker) never touches a
+    /// the [`NoopServletInvoker`](crate::NoopServletInvoker)(crate::NoopServletInvoker) never touches a
     /// runtime, so none is required and [`ServletDispatch::runtime`] returns
     /// `None`.
     pub fn without_runtime(invoker: Arc<dyn ServletInvoker>) -> Self {
@@ -263,7 +263,7 @@ impl ServletDispatch {
     ///
     /// Returns whatever [`ServletInvoker::invoke`] returns on failure (a
     /// [`tomcatrs_core::Error`]). On the no-JVM build the
-    /// [`NoopServletInvoker`](crate::NoopServletInvoker) never errors and this
+    /// [`NoopServletInvoker`](crate::NoopServletInvoker)(crate::NoopServletInvoker) never errors and this
     /// yields a `501` response.
     pub async fn dispatch(
         &self,

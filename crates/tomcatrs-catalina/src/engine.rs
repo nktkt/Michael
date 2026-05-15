@@ -1,7 +1,7 @@
 //! [`Engine`] — the request-processing engine.
 //!
-//! In Apache Tomcat an `Engine` is the top container of a [`Service`]: it owns
-//! the set of virtual [`Host`]s and names the host used when an incoming
+//! In Apache Tomcat an `Engine` is the top container of a `Service`: it owns
+//! the set of virtual [`crate::Host`]s and names the host used when an incoming
 //! request matches none of them. This port keeps that shape; the engine is
 //! also the natural anchor for the [`Mapper`](crate::Mapper).
 

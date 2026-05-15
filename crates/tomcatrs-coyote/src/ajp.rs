@@ -374,12 +374,12 @@ impl AjpMessage {
 
     /// Serialise this message into a complete, framed packet.
     ///
-    /// `magic` is [`MAGIC_IN`] or [`MAGIC_OUT`]. The returned buffer is
+    /// `magic` is `MAGIC_IN` or `MAGIC_OUT`. The returned buffer is
     /// `magic (2) + length (2) + payload`.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Protocol`] if the payload exceeds [`MAX_PACKET_PAYLOAD`].
+    /// Returns [`Error::Protocol`] if the payload exceeds `MAX_PACKET_PAYLOAD`.
     pub fn encode(&self, magic: [u8; 2]) -> Result<Bytes> {
         if self.payload.len() > MAX_PACKET_PAYLOAD {
             return Err(Error::protocol("AJP packet payload exceeds 65535 bytes"));
@@ -767,7 +767,7 @@ pub fn encode_send_headers(resp: &Response) -> Result<AjpMessage> {
 /// Encode one `Send Body Chunk` (`0x03`) packet.
 ///
 /// Layout: `type(1) len(u16) data NUL`. `data` must not exceed
-/// [`MAX_SEND_CHUNK`]; callers split larger bodies across packets.
+/// `MAX_SEND_CHUNK`; callers split larger bodies across packets.
 pub fn encode_send_body_chunk(data: &[u8]) -> Result<AjpMessage> {
     if data.len() > MAX_SEND_CHUNK {
         return Err(Error::protocol("AJP body chunk exceeds maximum size"));

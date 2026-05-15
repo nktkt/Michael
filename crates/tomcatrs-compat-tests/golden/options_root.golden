@@ -1,0 +1,8 @@
+# OPTIONS / — same as POST/PUT/DELETE: the static handler is GET/HEAD only.
+status: 405
+header.content-type: text/html; charset=utf-8
+present.server:
+present.content-length:
+body.contains: 405
+body.contains: Method Not Allowed
+body.len_ge: 100

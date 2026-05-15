@@ -5,7 +5,7 @@
 //! [`Wrapper`](crate::Wrapper)) owns a *pipeline* of [`Valve`]s. A request
 //! entering a container is passed through that container's valves in order;
 //! the last valve in a pipeline — the "basic" valve — is the one that hands
-//! the request down to the next container (or, for a [`Wrapper`], finally
+//! the request down to the next container (or, for a [`Wrapper`](crate::Wrapper), finally
 //! invokes the servlet).
 //!
 //! This module ports `org.apache.catalina.Valve` and the standard valve
@@ -315,7 +315,7 @@ impl Valve for ErrorReportValve {
 
 /// The standard *basic* valve for an [`Engine`](crate::Engine) pipeline.
 ///
-/// In Tomcat (`StandardEngineValve`) this valve selects the [`Host`] for the
+/// In Tomcat (`StandardEngineValve`) this valve selects the [`Host`](crate::Host) for the
 /// request and delegates into the host's pipeline. This port keeps the
 /// logging-and-delegate shape; host selection is performed by the
 /// [`Mapper`](crate::Mapper) and surfaced via [`ValveContext::mapping`].

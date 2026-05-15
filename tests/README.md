@@ -58,7 +58,42 @@ tests/
     ├── sample_wars/      assorted small sample WARs
     ├── spring_boot_war/  a Spring Boot application packaged as a WAR
     └── legacy_web_xml/   apps exercising older web.xml descriptors
+
+fixtures/
+└── wars/                 exploded WAR corpus shared across crates
+    ├── hello/            minimal servlet declaration + URL mapping
+    ├── static/           pure-static webapp (no servlets), html/css/js assets
+    ├── filtered/         servlet behind a filter mapped to /*
+    ├── listener/         single ServletContextListener declaration
+    ├── welcome/          web.xml with <welcome-file-list> + index.html
+    └── secure/           <security-constraint> on /admin/* (basic auth)
 ```
 
-Each leaf directory currently contains a `.gitkeep` placeholder so the tree is
-committed before the tests themselves are written.
+Each leaf directory under the test suite tree currently contains a `.gitkeep`
+placeholder so the tree is committed before the tests themselves are written.
+
+## WAR fixture corpus
+
+`tests/fixtures/wars/` is a workspace-shared corpus of **exploded** webapp
+directories. Each fixture ships a real, well-formed Jakarta EE 6.0 `web.xml`
+under `WEB-INF/`, plus, where useful, `WEB-INF/src/*.java` documentation-only
+source files describing what the declared servlets, filters, or listeners are
+*meant* to do (the test harness does not compile these sources).
+
+The fixtures cover one slice of the deployment-descriptor surface each:
+
+| Fixture     | What it covers                                                  |
+|-------------|-----------------------------------------------------------------|
+| `hello/`    | one `<servlet>` (`HelloServlet`) mapped to `/hello`             |
+| `static/`   | empty servlet list, static assets (`index.html`, CSS, JS)       |
+| `filtered/` | a `<filter>` mapped to `/*` in front of a servlet               |
+| `listener/` | a single `<listener>` declaring a `ServletContextListener`      |
+| `welcome/`  | a three-entry `<welcome-file-list>` plus an `index.html`        |
+| `secure/`   | a `<security-constraint>` on `/admin/*` plus `<login-config>`   |
+
+The corpus is exercised by
+`crates/tomcatrs-webapp/tests/corpus.rs`, which opens every fixture via
+`Webapp::open`, asserts the parsed `WebDescriptor` matches expectations, and
+runs `DeploymentScanner::scan` over the corpus root to confirm each fixture is
+discovered as an exploded deployment.
+

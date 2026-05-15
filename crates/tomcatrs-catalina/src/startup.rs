@@ -246,7 +246,7 @@ fn validate_servlet(wrapper: &Wrapper) -> Result<()> {
 /// For each eager wrapper, in load-on-startup order:
 ///
 /// 1. log the init step;
-/// 2. validate the wrapper has a resolvable servlet (see [`validate_servlet`]);
+/// 2. validate the wrapper has a resolvable servlet (see `validate_servlet`);
 /// 3. on success, record the servlet name in [`StartupReport::initialized`];
 /// 4. on failure, log it and record `(name, reason)` in
 ///    [`StartupReport::failed`] — **continuing** with the remaining servlets,

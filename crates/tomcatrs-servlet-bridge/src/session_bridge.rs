@@ -16,9 +16,9 @@
 //!
 //! # The session handle registry
 //!
-//! [`SESSION_HANDLE_REGISTRY`] is a process-global `DashMap<i64, SessionHandle>`
+//! `SESSION_HANDLE_REGISTRY` is a process-global `DashMap<i64, SessionHandle>`
 //! behind a [`OnceLock`], the same shape as
-//! [`crate::jni::HANDLE_REGISTRY`](crate::jni). The connector / dispatch layer
+//! `HANDLE_REGISTRY` in [`crate::jni`]. The connector / dispatch layer
 //! resolves a request's session (see [`SessionBinder`]), registers the
 //! resulting [`SessionHandle`] under a process-unique `nativeSessionId`, and
 //! hands that id across JNI. When the request finishes, the id is unregistered.
@@ -42,7 +42,7 @@
 //! [`SessionManager`] is async, but the JNI natives are synchronous (they run
 //! on the bridge worker pool, see [`crate::jvm`]). Each [`SessionHandle`]
 //! operation therefore does a *load → mutate → save* cycle and blocks on it
-//! with a minimal single-future executor ([`block_on`]). This is sound because
+//! with a minimal single-future executor (`block_on`). This is sound because
 //! every [`tomcatrs_session::SessionStore`] future used by the bridge resolves
 //! without yielding to a real reactor (the memory store is lock-free and
 //! synchronous; file/Redis I/O complete eagerly from the worker thread's
@@ -71,7 +71,7 @@ pub type SessionId = String;
 /// store is synchronous and the file/Redis stores complete their I/O eagerly
 /// from the caller's perspective — so a busy poll terminates promptly. This
 /// keeps the crate free of an async-runtime dependency on its default path,
-/// matching the executor used by [`crate::dispatch`] and [`crate::lib`] tests.
+/// matching the executor used by [`crate::dispatch`] and crate-root tests.
 fn block_on<F: std::future::Future>(mut fut: F) -> F::Output {
     use std::pin::Pin;
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
