@@ -47,6 +47,12 @@ final class NativeRequest {
 
     static native String[] nativeGetHeaderNames(long nativeRequestId);
 
+    /**
+     * Parsed {@code Content-Length} header value, or {@code -1} when absent or
+     * malformed — matching {@code HttpServletRequest.getContentLengthLong()}.
+     */
+    static native long nativeGetContentLength(long nativeRequestId);
+
     static native String nativeGetAttribute(long nativeRequestId, String name);
 
     static native void nativeSetAttribute(long nativeRequestId, String name, String value);

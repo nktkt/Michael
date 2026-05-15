@@ -241,9 +241,42 @@ pub fn webapp_config(
 /// * on Windows, backslashes are normalised to `/` and a drive-letter path
 ///   like `C:\x` becomes `file:///C:/x`.
 ///
-/// Note: this does not canonicalise or touch the filesystem; it is a pure
-/// string transformation so it works without the `jvm` feature and in tests.
+/// **Directory semantics:** if `path` exists and is a directory, the
+/// emitted URL ends with `/`. This matters because `java.net.URLClassLoader`
+/// treats URLs *without* a trailing slash as JAR-file URLs and URLs *with*
+/// one as directory classpath entries. Without the slash, classes in the
+/// directory fail to load with `ClassNotFoundException`.
+///
+/// The directory check is filesystem-aware — for paths that don't exist
+/// yet (tests, futures), call [`path_to_file_url_dir`] explicitly to force
+/// the trailing slash.
+///
+/// Note: aside from the directory probe, this is a pure string
+/// transformation so it works without the `jvm` feature and in tests.
 pub fn path_to_file_url(path: &Path) -> String {
+    let is_dir = path.is_dir();
+    let url = encode_path_as_file_url(path);
+    if is_dir && !url.ends_with('/') {
+        format!("{url}/")
+    } else {
+        url
+    }
+}
+
+/// Like [`path_to_file_url`] but unconditionally appends a trailing `/`,
+/// producing a URL that `URLClassLoader` treats as a classpath directory
+/// entry. Use this for paths that may not exist yet on disk (test
+/// fixtures, configuration that hasn't been materialised, etc.).
+pub fn path_to_file_url_dir(path: &Path) -> String {
+    let url = encode_path_as_file_url(path);
+    if url.ends_with('/') {
+        url
+    } else {
+        format!("{url}/")
+    }
+}
+
+fn encode_path_as_file_url(path: &Path) -> String {
     let raw = path.to_string_lossy();
     // Normalise separators so Windows paths produce forward-slash URLs.
     let normalised = raw.replace('\\', "/");

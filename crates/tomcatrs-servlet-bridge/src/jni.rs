@@ -283,7 +283,7 @@ pub fn unregister_response(id: i64) -> Option<ResponseEntry> {
 // Real JNI entry points — only compiled with `--features jvm`.
 // ---------------------------------------------------------------------------
 #[cfg(feature = "jvm")]
-pub use imp::register_native_methods;
+pub use imp::{register_native_methods, request_bindings, response_bindings, NativeBinding};
 
 #[cfg(feature = "jvm")]
 mod imp {
@@ -841,36 +841,199 @@ mod imp {
 
     // -- registration ------------------------------------------------------
 
-    /// Wire every native above into the JVM with `RegisterNatives`, so the Java
-    /// `NativeRequest` / `NativeResponse` classes resolve their `native`
-    /// methods to these Rust functions instead of a shared library.
+    /// One row of a registration table: a Java method name, its JNI signature,
+    /// and the `extern "system"` Rust fn pointer it should bind to.
     ///
-    /// This is intentionally a thin stub for now: it resolves the two facade
-    /// classes (proving they are on the classpath) and logs intent. The actual
-    /// [`JNIEnv::register_native_methods`] calls — which need
-    /// [`jni::NativeMethod`] tables built from raw function pointers — are
-    /// filled in when the `JvmRuntime` start-up sequence is integrated, since
-    /// that is what owns the `JNIEnv` at the right point in the lifecycle.
+    /// The tuple shape is exactly what gets fed into `jni::NativeMethod`.
+    pub type NativeBinding = (&'static str, &'static str, *mut std::ffi::c_void);
+
+    /// The bindings table for `org.apache.tomcatrs.bridge.NativeRequest`.
+    ///
+    /// Every entry here must have a matching `static native` declaration in
+    /// `NativeRequest.java`; conversely, every Java `static native` that wants
+    /// a Rust implementation must appear here (otherwise the JVM will throw
+    /// `UnsatisfiedLinkError` on first use).
+    pub fn request_bindings() -> Vec<NativeBinding> {
+        vec![
+            (
+                "nativeGetMethod",
+                "(J)Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeRequest_nativeGetMethod as *mut _,
+            ),
+            (
+                "nativeGetRequestUri",
+                "(J)Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeRequest_nativeGetRequestUri as *mut _,
+            ),
+            (
+                "nativeGetQueryString",
+                "(J)Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeRequest_nativeGetQueryString as *mut _,
+            ),
+            (
+                "nativeGetProtocol",
+                "(J)Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeRequest_nativeGetProtocol as *mut _,
+            ),
+            (
+                "nativeGetScheme",
+                "(J)Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeRequest_nativeGetScheme as *mut _,
+            ),
+            (
+                "nativeGetRemoteAddr",
+                "(J)Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeRequest_nativeGetRemoteAddr as *mut _,
+            ),
+            (
+                "nativeGetHeader",
+                "(JLjava/lang/String;)Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeRequest_nativeGetHeader as *mut _,
+            ),
+            (
+                "nativeGetHeaderNames",
+                "(J)[Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeRequest_nativeGetHeaderNames as *mut _,
+            ),
+            (
+                "nativeGetContentLength",
+                "(J)J",
+                Java_org_apache_tomcatrs_bridge_NativeRequest_nativeGetContentLength as *mut _,
+            ),
+            (
+                "nativeGetAttribute",
+                "(JLjava/lang/String;)Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeRequest_nativeGetAttribute as *mut _,
+            ),
+            (
+                "nativeSetAttribute",
+                "(JLjava/lang/String;Ljava/lang/String;)V",
+                Java_org_apache_tomcatrs_bridge_NativeRequest_nativeSetAttribute as *mut _,
+            ),
+            (
+                "nativeReadBody",
+                "(J[BII)I",
+                Java_org_apache_tomcatrs_bridge_NativeRequest_nativeReadBody as *mut _,
+            ),
+            (
+                "nativeBodyRemaining",
+                "(J)I",
+                Java_org_apache_tomcatrs_bridge_NativeRequest_nativeBodyRemaining as *mut _,
+            ),
+        ]
+    }
+
+    /// The bindings table for `org.apache.tomcatrs.bridge.NativeResponse`.
+    pub fn response_bindings() -> Vec<NativeBinding> {
+        vec![
+            (
+                "nativeSetStatus",
+                "(JI)V",
+                Java_org_apache_tomcatrs_bridge_NativeResponse_nativeSetStatus as *mut _,
+            ),
+            (
+                "nativeSetHeader",
+                "(JLjava/lang/String;Ljava/lang/String;)V",
+                Java_org_apache_tomcatrs_bridge_NativeResponse_nativeSetHeader as *mut _,
+            ),
+            (
+                "nativeAddHeader",
+                "(JLjava/lang/String;Ljava/lang/String;)V",
+                Java_org_apache_tomcatrs_bridge_NativeResponse_nativeAddHeader as *mut _,
+            ),
+            (
+                "nativeWriteBody",
+                "(J[BII)V",
+                Java_org_apache_tomcatrs_bridge_NativeResponse_nativeWriteBody as *mut _,
+            ),
+            (
+                "nativeFlush",
+                "(J)V",
+                Java_org_apache_tomcatrs_bridge_NativeResponse_nativeFlush as *mut _,
+            ),
+            (
+                "nativeCommit",
+                "(J)Z",
+                Java_org_apache_tomcatrs_bridge_NativeResponse_nativeCommit as *mut _,
+            ),
+            (
+                "nativeIsCommitted",
+                "(J)Z",
+                Java_org_apache_tomcatrs_bridge_NativeResponse_nativeIsCommitted as *mut _,
+            ),
+        ]
+    }
+
+    /// Convert a [`NativeBinding`] table into the `jni::NativeMethod` form
+    /// `JNIEnv::register_native_methods` expects.
+    pub(crate) fn to_native_methods(bindings: &[NativeBinding]) -> Vec<jni::NativeMethod> {
+        bindings
+            .iter()
+            .map(|(name, sig, fn_ptr)| jni::NativeMethod {
+                name: jni::strings::JNIString::from(*name),
+                sig: jni::strings::JNIString::from(*sig),
+                fn_ptr: *fn_ptr,
+            })
+            .collect()
+    }
+
+    /// Wire every native above into the JVM with `RegisterNatives`, so the
+    /// Java `NativeRequest` / `NativeResponse` / `NativeSession` /
+    /// `NativeAsyncContext` classes resolve their `native` methods to these
+    /// Rust functions instead of a shared library.
+    ///
+    /// This is called by [`crate::jvm::JvmRuntime::start`] right after the
+    /// JavaVM is up, via [`crate::jvm::JvmRuntime::with_env`], so all four
+    /// facade classes get wired in one shot.
+    ///
+    /// If `find_class` fails (typically: the bridge JAR is not on the JVM's
+    /// `-Djava.class.path`), the failure is mapped to `Error::Bridge` so
+    /// callers fail fast with a clear message.
     pub fn register_native_methods(env: &mut JNIEnv) -> tomcatrs_core::Result<()> {
         use tomcatrs_core::Error;
 
-        for class in [
-            "org/apache/tomcatrs/bridge/NativeRequest",
-            "org/apache/tomcatrs/bridge/NativeResponse",
-        ] {
-            env.find_class(class).map_err(|e| {
-                Error::bridge(format!("bridge class {class} not on JVM classpath: {e}"))
+        // `_ = JValue::Void` keeps the `JValue` import meaningful — it's still
+        // used by other call sites that pattern-match registration results.
+        let _ = JValue::Void;
+
+        let groups: [(&str, Vec<NativeBinding>); 4] = [
+            (
+                "org/apache/tomcatrs/bridge/NativeRequest",
+                request_bindings(),
+            ),
+            (
+                "org/apache/tomcatrs/bridge/NativeResponse",
+                response_bindings(),
+            ),
+            (
+                "org/apache/tomcatrs/bridge/NativeSession",
+                crate::session_bridge::session_bindings(),
+            ),
+            (
+                "org/apache/tomcatrs/bridge/NativeAsyncContext",
+                crate::async_servlet::async_context_bindings(),
+            ),
+        ];
+
+        for (class_name, bindings) in groups.iter() {
+            let class = env.find_class(class_name).map_err(|e| {
+                // Clear any pending exception so subsequent JNI calls work.
+                let _ = env.exception_clear();
+                Error::bridge(format!(
+                    "bridge JAR not on classpath: cannot find class {class_name}: {e}"
+                ))
+            })?;
+            let methods = to_native_methods(bindings);
+            env.register_native_methods(class, &methods).map_err(|e| {
+                let _ = env.exception_clear();
+                Error::bridge(format!("RegisterNatives failed for {class_name}: {e}"))
             })?;
         }
-
-        // `_ = JValue::Void` keeps the `JValue` import meaningful for callers
-        // that pattern-match registration results once this is fleshed out.
-        let _ = JValue::Void;
 
         tracing::debug!(
             request_natives = super::NATIVE_REQUEST_METHODS.len(),
             response_natives = super::NATIVE_RESPONSE_METHODS.len(),
-            "bridge facade classes resolved; native-method registration pending JvmRuntime wiring"
+            "bridge native methods registered on all four facade classes"
         );
         Ok(())
     }

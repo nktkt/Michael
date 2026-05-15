@@ -59,10 +59,13 @@ pub mod upgrade;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
+use tokio::sync::watch;
 
 use crate::acceptor::Acceptor;
+pub use crate::acceptor::Shutdown;
 pub use crate::cookies::{Cookie, MediaRange, SameSite, SetCookie};
 
 /// A fully parsed, normalized inbound request.
@@ -260,18 +263,47 @@ impl HttpConnector {
     /// Bind the configured `address:port` and run the accept loop until the
     /// listener errors.
     ///
+    /// Wraps [`HttpConnector::serve_with_shutdown`] with a never-triggered
+    /// [`Shutdown`] handle so the loop runs forever (or until a fatal
+    /// listener error). New embedders should prefer the explicit variant.
+    ///
     /// # Errors
     ///
     /// Returns [`tomcatrs_core::Error::Protocol`] if the configuration requests
     /// a protocol or TLS mode that is not yet supported in v0.1.0, or
     /// [`tomcatrs_core::Error::Io`] if the socket cannot be bound.
     pub async fn serve(self) -> tomcatrs_core::Result<()> {
+        // Keep `_dummy` alive in this stack frame so its receiver doesn't
+        // observe a sender-drop (which would itself wake the watch and cut
+        // the loop short). The drain timeout never fires because the flag
+        // never flips.
+        let _dummy = Shutdown::new();
+        let rx = _dummy.subscribe();
+        self.serve_with_shutdown(rx, Duration::from_secs(30)).await
+    }
+
+    /// Bind the configured `address:port` and run the accept loop, watching
+    /// `shutdown` for a cooperative drain.
+    ///
+    /// When `shutdown` flips to `true`, the connector stops accepting new
+    /// connections immediately (the listening socket is dropped), then waits
+    /// up to `drain_timeout` for already-accepted per-connection tasks to
+    /// finish their in-flight requests before aborting any stragglers.
+    ///
+    /// # Errors
+    ///
+    /// Same surface as [`HttpConnector::serve`].
+    pub async fn serve_with_shutdown(
+        self,
+        shutdown: watch::Receiver<bool>,
+        drain_timeout: Duration,
+    ) -> tomcatrs_core::Result<()> {
         let acceptor = Acceptor::bind(&self.cfg, self.adapter.clone()).await?;
         self.local_port.store(
             acceptor.local_addr().port(),
             std::sync::atomic::Ordering::SeqCst,
         );
-        acceptor.run().await
+        acceptor.run_with_shutdown(shutdown, drain_timeout).await
     }
 
     /// The port the connector is (or will be) bound on.

@@ -2,6 +2,8 @@ package jakarta.servlet;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.util.Enumeration;
+import java.util.Map;
 
 /**
  * STUB of {@code jakarta.servlet.ServletRequest}.
@@ -28,4 +30,30 @@ public interface ServletRequest {
     ServletInputStream getInputStream() throws IOException;
 
     BufferedReader getReader() throws IOException;
+
+    String getParameter(String name);
+
+    Enumeration<String> getParameterNames();
+
+    String[] getParameterValues(String name);
+
+    Map<String, String[]> getParameterMap();
+
+    String getCharacterEncoding();
+
+    void setCharacterEncoding(String encoding);
+
+    int getContentLength();
+
+    long getContentLengthLong();
+
+    String getContentType();
+
+    String getServerName();
+
+    int getServerPort();
+
+    String getRemoteHost();
+
+    boolean isSecure();
 }

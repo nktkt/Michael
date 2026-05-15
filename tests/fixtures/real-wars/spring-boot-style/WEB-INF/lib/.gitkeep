@@ -1,0 +1,6 @@
+# Placeholder for fixture jar dependencies.
+#
+# A real Spring Boot fat WAR ships an embedded servlet container plus
+# application jars here. This fixture intentionally ships no jars — the build
+# script verifies the lib/ directory is collected by `Webapp::open` even when
+# empty. To exercise WEB-INF/lib scanning with a real jar, drop one in.

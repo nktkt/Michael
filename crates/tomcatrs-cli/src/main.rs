@@ -11,6 +11,7 @@
 //! ```text
 //! tomcatrs run          [--config server.xml] [--port N] [--app-base DIR] [--log-level L]
 //! tomcatrs check-config <server.xml>
+//! tomcatrs preflight    --config server.xml [--strict]
 //! tomcatrs version
 //! ```
 //!
@@ -21,15 +22,18 @@
 
 #![deny(missing_docs)]
 
+mod preflight;
+
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use tomcatrs_catalina::adapter::CatalinaAdapter;
 use tomcatrs_config::{Protocol, ServerConfig};
 use tomcatrs_core::{Lifecycle, LifecycleContext};
-use tomcatrs_coyote::HttpConnector;
+use tomcatrs_coyote::{HttpConnector, Shutdown};
 
 /// The `tomcatrs` command-line interface.
 #[derive(Debug, Parser)]
@@ -57,8 +61,27 @@ enum Command {
         path: PathBuf,
     },
 
+    /// Run production-readiness checks against a `server.xml`.
+    ///
+    /// Each check prints one `[OK] / [WARN] / [FAIL]: <message>` line and
+    /// the command exits non-zero on any failure (or, with `--strict`, on
+    /// any warning).
+    Preflight(PreflightArgs),
+
     /// Print the runtime version and exit.
     Version,
+}
+
+/// Flags accepted by the `preflight` subcommand.
+#[derive(Debug, Parser)]
+struct PreflightArgs {
+    /// Path to the `server.xml` to validate.
+    #[arg(long, value_name = "PATH")]
+    config: PathBuf,
+
+    /// Treat warnings as failures (non-zero exit if any `WARN` rows appear).
+    #[arg(long)]
+    strict: bool,
 }
 
 /// Flags accepted by the `run` subcommand.
@@ -80,6 +103,16 @@ struct RunArgs {
     /// Logging verbosity (`trace`, `debug`, `info`, `warn`, `error`).
     #[arg(long, value_name = "LEVEL", default_value = "info")]
     log_level: String,
+
+    /// Graceful-shutdown drain timeout, in seconds.
+    ///
+    /// On `SIGINT` (Ctrl-C) or, on Unix, `SIGTERM`, every HTTP/1.1 connector
+    /// stops accepting new connections immediately and waits this long for
+    /// in-flight requests to complete. Requests still running when the
+    /// timeout fires are aborted (the operator sees a `forced shutdown` log
+    /// line). A second signal during the drain forces an immediate abort.
+    #[arg(long, value_name = "SECS", default_value_t = 30)]
+    shutdown_timeout: u64,
 }
 
 #[tokio::main]
@@ -89,6 +122,15 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Run(args) => run(args).await,
         Command::CheckConfig { path } => check_config(&path),
+        Command::Preflight(args) => {
+            let code = preflight::run_preflight(&args.config, args.strict)?;
+            // `main` is `anyhow::Result<()>`; convert a non-zero preflight
+            // code into an explicit process exit so the shell sees it.
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
         Command::Version => {
             println!(
                 "Tomcat-RS Compatibility Runtime v{}",
@@ -150,7 +192,13 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
     // 4. Stand up one HTTP/1.1 connector per matching `<Connector>`, each
     //    backed by a `CatalinaAdapter` that routes through the live container
     //    tree. Other protocols are recognised but not served in v0.1.0.
+    //
+    //    Every connector subscribes to a single shared `Shutdown` handle. When
+    //    we trigger it (below) each accept loop stops accepting *and* drains
+    //    its in-flight requests within `--shutdown-timeout` seconds.
     let app_base = args.app_base.clone();
+    let shutdown = Shutdown::new();
+    let drain_timeout = Duration::from_secs(args.shutdown_timeout);
     let mut connector_tasks = Vec::new();
     let mut http11_count = 0usize;
 
@@ -173,9 +221,13 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
                         service = %service.name(),
                         port = connector_cfg.port,
                         app_base = %app_base.display(),
+                        shutdown_timeout_secs = args.shutdown_timeout,
                         "starting HTTP/1.1 connector (CatalinaAdapter)",
                     );
-                    connector_tasks.push(tokio::spawn(async move { connector.serve().await }));
+                    let rx = shutdown.subscribe();
+                    connector_tasks.push(tokio::spawn(async move {
+                        connector.serve_with_shutdown(rx, drain_timeout).await
+                    }));
                 }
                 Protocol::Http2 => {
                     tracing::warn!(
@@ -199,17 +251,70 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
         tracing::warn!("no HTTP/1.1 connectors configured — the server will accept no traffic");
     }
 
-    // 5. Block until Ctrl-C, then shut the container down in an orderly way.
-    tracing::info!("Tomcat-RS is up; press Ctrl-C to shut down");
-    tokio::signal::ctrl_c()
+    // 5. Block until a shutdown signal arrives, then shut the container down
+    //    in an orderly way.
+    //
+    //    Unix: wait for *either* `SIGINT` (Ctrl-C) or `SIGTERM` — the signal
+    //    Docker / systemd / Kubernetes send for a graceful stop. A *second*
+    //    signal during the drain forces an immediate abort: useful when a
+    //    misbehaving handler is hung and the operator wants the process gone.
+    //
+    //    Windows: only `Ctrl-C` is portably available; the same "second
+    //    signal forces" semantics apply.
+    tracing::info!(
+        shutdown_timeout_secs = args.shutdown_timeout,
+        "Tomcat-RS is up; send SIGINT/SIGTERM (Ctrl-C) to shut down",
+    );
+    wait_for_shutdown_signal()
         .await
-        .context("failed to install Ctrl-C handler")?;
-    tracing::info!("shutdown signal received; stopping Tomcat-RS");
+        .context("failed to install signal handlers")?;
+    tracing::info!(
+        shutdown_timeout_secs = args.shutdown_timeout,
+        "shutdown signal received; draining in-flight requests then stopping Tomcat-RS",
+    );
 
-    // Connector tasks hold `serve()` futures that run until the process exits;
-    // abort them so their listening sockets are released promptly.
-    for task in &connector_tasks {
-        task.abort();
+    // Signal every connector to drain. This drops their listening sockets
+    // immediately (so a kernel `SYN` to the port gets `ECONNREFUSED`) and
+    // gives in-flight per-connection tasks up to `drain_timeout` to finish.
+    shutdown.trigger();
+
+    // Race the connectors' drain against either (a) a second OS signal
+    // (forced shutdown) or (b) `--shutdown-timeout` plus a small slop. The
+    // connectors honour `drain_timeout` themselves; the outer budget here is
+    // purely a safety net so a runaway connector can't pin the process open.
+    let drain_all = async {
+        for task in connector_tasks.drain(..) {
+            match task.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!(error = %e, "connector exited with error"),
+                Err(e) if e.is_cancelled() => {}
+                Err(e) => tracing::warn!(error = %e, "connector task panicked or was aborted"),
+            }
+        }
+    };
+    let outer_budget = drain_timeout + Duration::from_secs(2);
+    tokio::select! {
+        biased;
+
+        // A second signal during the drain: forced shutdown. We don't abort
+        // connector tasks here — they're still tracked above — we just stop
+        // waiting and proceed to Server::stop()/destroy().
+        _ = wait_for_shutdown_signal() => {
+            tracing::warn!("forced shutdown — in-flight requests may be cut");
+        }
+
+        // Happy path: every connector reported a clean drain.
+        _ = drain_all => {
+            tracing::info!("all connectors drained");
+        }
+
+        // Belt-and-braces: don't let a buggy connector pin the process open.
+        _ = tokio::time::sleep(outer_budget) => {
+            tracing::warn!(
+                budget_secs = outer_budget.as_secs(),
+                "connector drain exceeded its outer budget — proceeding with Server::stop()",
+            );
+        }
     }
 
     server
@@ -220,9 +325,55 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
         .destroy(&ctx)
         .await
         .context("Catalina server failed to release resources")?;
+
+    // Note: a `JvmRuntime`, when used, drains and detaches its worker pool
+    // from `impl Drop` (see `tomcatrs_servlet_bridge::jvm`). The CLI doesn't
+    // currently own one directly — webapps that wire one up rely on RAII to
+    // tear it down as the owner goes out of scope. If a future revision
+    // gives the CLI an explicit `JvmRuntime`, call `JvmRuntime::shutdown()`
+    // here before returning.
     tracing::info!("Tomcat-RS shut down cleanly");
 
     Ok(())
+}
+
+/// Wait for the first OS signal that should trigger a graceful shutdown.
+///
+/// * On Unix this resolves when either `SIGINT` (Ctrl-C, when run from a
+///   terminal) or `SIGTERM` (the default Docker / systemd / Kubernetes
+///   stop signal) is delivered to the process.
+/// * On non-Unix targets (Windows) only Ctrl-C is portably available, so
+///   that's all we listen for.
+///
+/// Each call installs a *fresh* handler, so calling this twice — once before
+/// the drain and once during — gives the operator the "second signal forces
+/// abort" semantics the CLI advertises.
+async fn wait_for_shutdown_signal() -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigint =
+            signal(SignalKind::interrupt()).context("failed to install SIGINT handler")?;
+        let mut sigterm =
+            signal(SignalKind::terminate()).context("failed to install SIGTERM handler")?;
+        tokio::select! {
+            _ = sigint.recv() => {
+                tracing::info!(signal = "SIGINT", "received OS signal");
+            }
+            _ = sigterm.recv() => {
+                tracing::info!(signal = "SIGTERM", "received OS signal");
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .context("failed to install Ctrl-C handler")?;
+        tracing::info!(signal = "CTRL_C", "received OS signal");
+        Ok(())
+    }
 }
 
 /// Implements `tomcatrs check-config <PATH>`.

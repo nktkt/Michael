@@ -125,6 +125,38 @@ impl Lifecycle for Server {
             service.destroy(ctx).await?;
         }
         self.state.set(LifecycleState::Destroyed);
+
+        // Make the shutdown cascade visible to operators reading the log:
+        // count every level of the container tree so it's clear what was
+        // taken down in this `destroy()` call. The numbers are derived
+        // directly from the live tree we just shut down, not re-read from
+        // config, so they reflect the actual cascade.
+        let mut service_count = 0usize;
+        let mut host_count = 0usize;
+        let mut context_count = 0usize;
+        let mut wrapper_count = 0usize;
+        for service in &self.services {
+            service_count += 1;
+            let engine = service.engine();
+            let hosts = engine.hosts();
+            host_count += hosts.len();
+            for host_entry in hosts.iter() {
+                let host = host_entry.value();
+                let contexts = host.contexts();
+                context_count += contexts.len();
+                for context_entry in contexts.iter() {
+                    wrapper_count += context_entry.value().wrappers().len();
+                }
+            }
+        }
+        tracing::info!(
+            component = %ctx.name,
+            services = service_count,
+            hosts = host_count,
+            contexts = context_count,
+            wrappers = wrapper_count,
+            "server destroy complete: Server → Service → Engine → Host → Context → Wrapper cascade finished",
+        );
         Ok(())
     }
 }

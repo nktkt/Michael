@@ -916,6 +916,74 @@ mod imp {
             }
         })
     }
+
+    /// Native bindings table for `org.apache.tomcatrs.bridge.NativeSession`.
+    ///
+    /// Returns the `(java_name, jni_signature, fn_ptr)` triples that
+    /// [`crate::jni::register_native_methods`] feeds into
+    /// `JNIEnv::register_native_methods`. Kept symmetric with
+    /// `request_bindings` / `response_bindings` in [`crate::jni`].
+    pub fn session_bindings() -> Vec<crate::jni::NativeBinding> {
+        vec![
+            (
+                "nativeGetId",
+                "(J)Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeSession_nativeGetId as *mut _,
+            ),
+            (
+                "nativeGetAttribute",
+                "(JLjava/lang/String;)Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeSession_nativeGetAttribute as *mut _,
+            ),
+            (
+                "nativeSetAttribute",
+                "(JLjava/lang/String;Ljava/lang/String;)V",
+                Java_org_apache_tomcatrs_bridge_NativeSession_nativeSetAttribute as *mut _,
+            ),
+            (
+                "nativeRemoveAttribute",
+                "(JLjava/lang/String;)V",
+                Java_org_apache_tomcatrs_bridge_NativeSession_nativeRemoveAttribute as *mut _,
+            ),
+            (
+                "nativeGetAttributeNames",
+                "(J)[Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeSession_nativeGetAttributeNames as *mut _,
+            ),
+            (
+                "nativeGetCreationTime",
+                "(J)J",
+                Java_org_apache_tomcatrs_bridge_NativeSession_nativeGetCreationTime as *mut _,
+            ),
+            (
+                "nativeGetLastAccessedTime",
+                "(J)J",
+                Java_org_apache_tomcatrs_bridge_NativeSession_nativeGetLastAccessedTime as *mut _,
+            ),
+            (
+                "nativeGetMaxInactiveInterval",
+                "(J)I",
+                Java_org_apache_tomcatrs_bridge_NativeSession_nativeGetMaxInactiveInterval
+                    as *mut _,
+            ),
+            (
+                "nativeSetMaxInactiveInterval",
+                "(JI)V",
+                Java_org_apache_tomcatrs_bridge_NativeSession_nativeSetMaxInactiveInterval
+                    as *mut _,
+            ),
+            (
+                "nativeInvalidate",
+                "(J)V",
+                Java_org_apache_tomcatrs_bridge_NativeSession_nativeInvalidate as *mut _,
+            ),
+            (
+                "nativeIsNew",
+                "(J)Z",
+                Java_org_apache_tomcatrs_bridge_NativeSession_nativeIsNew as *mut _,
+            ),
+        ]
+    }
 }
 
 #[cfg(test)]

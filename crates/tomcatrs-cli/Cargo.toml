@@ -13,6 +13,14 @@ description = "Tomcat-RS Compatibility Runtime — the `tomcatrs` command-line e
 name = "tomcatrs"
 path = "src/main.rs"
 
+[features]
+default = []
+# Mirror of `tomcatrs-servlet-bridge`'s `jvm` feature so the `preflight`
+# subcommand can report whether this binary was built with embedded-JVM
+# support. The CLI itself does not depend on `tomcatrs-servlet-bridge`,
+# so the feature is a build-time toggle rather than a dependency switch.
+jvm = []
+
 [dependencies]
 tomcatrs-core.workspace = true
 tomcatrs-config.workspace = true
@@ -25,3 +33,8 @@ tracing.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 anyhow.workspace = true
+
+# Used only by the graceful-shutdown integration test (Unix `kill(2)`).
+# Gated to Unix so Windows builds don't pull it in.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

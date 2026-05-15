@@ -109,6 +109,22 @@ public final class TomcatRsResponseFacade implements HttpServletResponse {
     }
 
     /**
+     * Flushes any buffered writer + the underlying native sink. The Rust
+     * side calls this through {@code ServletDispatcher} once the servlet
+     * returns, so the standard "container flushes for you" Servlet contract
+     * holds even though the user code did not explicitly call flush.
+     */
+    public void flushAll() throws IOException {
+        if (writer != null) {
+            writer.flush();
+        }
+        if (outputStream != null) {
+            outputStream.flush();
+        }
+        flushBuffer();
+    }
+
+    /**
      * {@link ServletOutputStream} that forwards every write straight into the
      * Rust response sink via {@link NativeResponse#nativeWriteBody}.
      */

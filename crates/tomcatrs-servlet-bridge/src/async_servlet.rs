@@ -683,6 +683,19 @@ pub fn lookup(request_id: i64) -> Option<Arc<AsyncContextState>> {
     registry().lookup(request_id)
 }
 
+/// The JNI method registration table the Java `NativeAsyncContext` facade
+/// expects, as `(java_name, jni_signature)` pairs. Kept as data — like
+/// [`crate::jni::NATIVE_REQUEST_METHODS`] — so it can be asserted against the
+/// Java sources without a JDK.
+pub const NATIVE_ASYNC_CONTEXT_METHODS: &[(&str, &str)] = &[
+    ("nativeStartAsync", "(JJ)Z"),
+    ("nativeComplete", "(J)V"),
+    ("nativeDispatch", "(JLjava/lang/String;)V"),
+    ("nativeSetTimeout", "(JJ)V"),
+    ("nativeGetTimeout", "(J)J"),
+    ("nativeIsAsyncStarted", "(J)Z"),
+];
+
 // ---------------------------------------------------------------------------
 // Real JNI entry points — only compiled with `--features jvm`.
 // ---------------------------------------------------------------------------
@@ -910,6 +923,48 @@ mod imp {
                 _ => JNI_FALSE,
             },
         )
+    }
+
+    /// Native bindings table for
+    /// `org.apache.tomcatrs.bridge.NativeAsyncContext`.
+    ///
+    /// Returns the `(java_name, jni_signature, fn_ptr)` triples that
+    /// [`crate::jni::register_native_methods`] feeds into
+    /// `JNIEnv::register_native_methods`. Kept symmetric with
+    /// `request_bindings` / `response_bindings` in [`crate::jni`].
+    pub fn async_context_bindings() -> Vec<crate::jni::NativeBinding> {
+        vec![
+            (
+                "nativeStartAsync",
+                "(JJ)Z",
+                Java_org_apache_tomcatrs_bridge_NativeAsyncContext_nativeStartAsync as *mut _,
+            ),
+            (
+                "nativeComplete",
+                "(J)V",
+                Java_org_apache_tomcatrs_bridge_NativeAsyncContext_nativeComplete as *mut _,
+            ),
+            (
+                "nativeDispatch",
+                "(JLjava/lang/String;)V",
+                Java_org_apache_tomcatrs_bridge_NativeAsyncContext_nativeDispatch as *mut _,
+            ),
+            (
+                "nativeSetTimeout",
+                "(JJ)V",
+                Java_org_apache_tomcatrs_bridge_NativeAsyncContext_nativeSetTimeout as *mut _,
+            ),
+            (
+                "nativeGetTimeout",
+                "(J)J",
+                Java_org_apache_tomcatrs_bridge_NativeAsyncContext_nativeGetTimeout as *mut _,
+            ),
+            (
+                "nativeIsAsyncStarted",
+                "(J)Z",
+                Java_org_apache_tomcatrs_bridge_NativeAsyncContext_nativeIsAsyncStarted as *mut _,
+            ),
+        ]
     }
 }
 

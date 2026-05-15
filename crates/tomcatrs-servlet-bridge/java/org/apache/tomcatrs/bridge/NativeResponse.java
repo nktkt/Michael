@@ -40,6 +40,12 @@ final class NativeResponse {
      */
     static native void nativeWriteBody(long nativeResponseId, byte[] buffer, int off, int len);
 
+    /**
+     * Flushes the response buffer; commits the response if it is not already
+     * committed. Mirrors {@code ServletResponse.flushBuffer()}.
+     */
+    static native void nativeFlush(long nativeResponseId);
+
     /** Commits the response (freezes status line and headers). */
     static native boolean nativeCommit(long nativeResponseId);
 

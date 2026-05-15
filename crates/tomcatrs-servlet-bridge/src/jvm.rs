@@ -376,17 +376,55 @@ mod imp {
         worker_threads: usize,
     }
 
+    /// The path to the bridge JAR exported by `build.rs` at compile time, or
+    /// `None` if the build script did not produce one (e.g. no JDK was present
+    /// when this crate was compiled, and `cargo:warning=` was emitted instead).
+    ///
+    /// Using `option_env!` instead of `env!` so the crate still builds when the
+    /// jar was not produced — the run-time check then warns and the JVM bridge
+    /// degrades to "JAR not on classpath" rather than failing the build.
+    pub(super) const BRIDGE_JAR_PATH: Option<&'static str> = option_env!("TOMCATRS_BRIDGE_JAR");
+
     impl JvmRuntime {
         /// Create the embedded JVM and attach the worker pool.
         ///
-        /// Builds the classpath option from [`JvmConfig::classpath`], appends
-        /// the caller's [`JvmConfig::jvm_args`], and applies a small set of
-        /// sane defaults (a generous thread stack size and headless AWT).
-        /// The resulting `JavaVM` is kept alive in the returned runtime.
+        /// Builds the classpath option from [`JvmConfig::classpath`] **plus**
+        /// the build-time `TOMCATRS_BRIDGE_JAR` (the jar `build.rs` produces),
+        /// appends the caller's [`JvmConfig::jvm_args`], and applies a small
+        /// set of sane defaults (a generous thread stack size and headless
+        /// AWT). The resulting `JavaVM` is kept alive in the returned runtime.
+        ///
+        /// After the VM is up the native methods on the four facade classes
+        /// (`NativeRequest`, `NativeResponse`, `NativeSession`,
+        /// `NativeAsyncContext`) are registered via `RegisterNatives` on a
+        /// worker thread. If that fails — typically because the bridge JAR is
+        /// missing from the classpath — the runtime is shut down and an
+        /// `Error::Bridge` is returned so the caller fails fast.
         pub fn start(cfg: JvmConfig) -> Result<JvmRuntime> {
+            // Compose the effective classpath: caller's entries + the bridge
+            // JAR `build.rs` produced (if any). The bridge JAR is *appended*
+            // so caller entries that shadow it (rare, but possible) win.
+            let mut effective_cfg = cfg.clone();
+            match BRIDGE_JAR_PATH {
+                Some(path) if !path.is_empty() => {
+                    let jar = PathBuf::from(path);
+                    if !effective_cfg.classpath.iter().any(|p| p == &jar) {
+                        effective_cfg.classpath.push(jar);
+                    }
+                }
+                _ => {
+                    tracing::warn!(
+                        "TOMCATRS_BRIDGE_JAR is not set (build.rs did not produce a bridge jar; \
+                         was `javac` available at build time?). The embedded JVM will start, but \
+                         the Tomcat-RS servlet bridge will not function because the bridge JAR is \
+                         missing from -Djava.class.path. Supply it out-of-band via JvmConfig::classpath."
+                    );
+                }
+            }
+
             let mut builder = InitArgsBuilder::new()
                 .version(JNIVersion::V8)
-                .option(cfg.classpath_option())
+                .option(effective_cfg.classpath_option())
                 // Sane defaults — overridable by anything the caller passes in
                 // `jvm_args` below, since later options win.
                 .option("-Xss1m")
@@ -406,13 +444,25 @@ mod imp {
             let (job_tx, job_rx) = std::sync::mpsc::channel::<Job>();
             let workers = Self::spawn_workers(&vm, worker_threads, job_rx)?;
 
-            Ok(JvmRuntime {
+            let runtime = JvmRuntime {
                 vm,
                 job_tx: std::sync::Mutex::new(Some(job_tx)),
                 workers: std::sync::Mutex::new(workers),
                 webapps: DashMap::new(),
                 worker_threads,
-            })
+            };
+
+            // Wire up `RegisterNatives` on a worker thread. Failure means the
+            // bridge JAR isn't on the classpath (or some other class-loading
+            // problem); shut the runtime down so we don't leak workers and
+            // surface a clear error.
+            if let Err(e) = runtime.with_env(crate::jni::register_native_methods) {
+                tracing::error!(error = %e, "registering bridge natives failed; shutting down JVM");
+                runtime.shutdown();
+                return Err(e);
+            }
+
+            Ok(runtime)
         }
 
         /// Spawn `count` OS threads, each attached to the JVM for its whole
