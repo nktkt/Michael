@@ -57,6 +57,7 @@ mod store_file;
 mod store_memory;
 mod store_redis;
 
+pub mod cluster_tcp;
 pub mod store_cluster;
 pub mod store_jdbc;
 
@@ -65,6 +66,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
+pub use cluster_tcp::TcpClusterTransport;
 pub use cookie::{CookieProcessor, SameSite};
 pub use manager::SessionManager;
 pub use store_cluster::{

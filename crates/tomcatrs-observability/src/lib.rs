@@ -14,11 +14,15 @@
 //!   JVM as JMX MBeans.
 
 pub mod access_log;
+pub mod health;
 pub mod jmx_bridge;
 pub mod metrics;
+pub mod otel;
 pub mod tracing;
 
 pub use access_log::{AccessLog, AccessLogEntry, AccessLogFormat};
+pub use health::{HealthAdapter, HealthCheck, HealthRegistry, HealthReport, HealthStatus};
 pub use jmx_bridge::{JmxBridge, MBeanAttribute, MBeanDescriptor};
 pub use metrics::{Counter, Gauge, MetricsRegistry};
+pub use otel::{OtelConfig, OtelMetricsExporter};
 pub use tracing::init_tracing;

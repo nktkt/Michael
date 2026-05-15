@@ -1452,11 +1452,13 @@ dependencies = [
  "bytes",
  "dashmap",
  "parking_lot",
+ "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tomcatrs-config",
  "tomcatrs-core",
  "tomcatrs-coyote",
+ "tomcatrs-security",
  "tomcatrs-servlet-bridge",
  "tomcatrs-webapp",
  "tracing",
@@ -1535,11 +1537,17 @@ dependencies = [
 name = "tomcatrs-observability"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "bytes",
  "dashmap",
+ "jni",
  "once_cell",
  "parking_lot",
+ "serde_json",
  "thiserror 1.0.69",
+ "tokio",
  "tomcatrs-core",
+ "tomcatrs-coyote",
  "tracing",
  "tracing-subscriber",
 ]

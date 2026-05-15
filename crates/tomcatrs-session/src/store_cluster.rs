@@ -37,6 +37,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, trace, warn};
 
@@ -60,7 +61,7 @@ pub enum ReplicationMode {
 /// The transport is responsible only for delivery; interpreting these is the
 /// job of [`ClusterSessionStore::apply_incoming`] (for writes) and
 /// [`ClusterSessionStore::load`] (for the request/response fetch pair).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClusterMessage {
     /// A session was created or updated on a peer; the recipient should store
     /// it locally.

@@ -35,17 +35,21 @@ pub mod access_control;
 pub mod auth_basic;
 pub mod auth_digest;
 pub mod auth_form;
+pub mod constraints;
 pub mod csrf;
 pub mod realm;
+pub mod realm_backends;
 
 pub use access_control::{
     enforce_limits, is_path_traversal, is_protected_path, normalize_and_validate_uri,
 };
 pub use auth_basic::BasicAuthenticator;
 pub use auth_digest::DigestAuthenticator;
-pub use auth_form::{FormAuthenticator, FormCredentials};
+pub use auth_form::{FormAuthOutcome, FormAuthenticator, FormCredentials, SavedRequestStore};
+pub use constraints::{ConstraintDecision, ConstraintRegistry, SecurityConstraint};
 pub use csrf::{CsrfToken, CsrfTokenStore};
 pub use realm::{InMemoryRealm, Principal, Realm};
+pub use realm_backends::{CombinedRealm, FileRealm, LockOutRealm};
 
 /// Crate version, sourced from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

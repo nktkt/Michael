@@ -11,9 +11,21 @@ description = "Tomcat-RS observability — structured logging, access logs, a me
 
 [dependencies]
 tomcatrs-core.workspace = true
+tomcatrs-coyote.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 parking_lot.workspace = true
 dashmap.workspace = true
 thiserror.workspace = true
 once_cell.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+bytes.workspace = true
+jni = { version = "0.21", optional = true, features = ["invocation"] }
+
+[features]
+# Opt-in JNI integration: enables `JmxBridge::register_with_jvm` to register a
+# DynamicMBean per metric on the platform `MBeanServer`. Off by default so the
+# crate compiles on hosts without a JDK / `libjvm`.
+jvm = ["dep:jni"]
