@@ -1,0 +1,30 @@
+# cargo-audit configuration.
+#
+# This file is intentionally near-empty: the default behaviour ("fail on
+# every active advisory") matches the policy in SECURITY.md.
+#
+# To register a *justified* ignore — for example, a low-severity advisory
+# that does not apply to how we use the crate, with an issue tracking the
+# eventual upgrade — add the advisory id under [advisories] like this:
+#
+#   [advisories]
+#   ignore = [
+#     # RUSTSEC-YYYY-NNNN: short reason this advisory does not apply to
+#     # Tomcat-RS, plus the issue link tracking removal of this ignore.
+#     "RUSTSEC-YYYY-NNNN",
+#   ]
+#
+# Every entry should have a comment and a tracking issue. The ignore list
+# is reviewed at every release.
+
+[advisories]
+ignore = [
+  # RUSTSEC-2025-0134 — `rustls-pemfile` is unmaintained, but only because
+  # its parser was upstreamed into `rustls-pki-types` (>=1.9.0). The
+  # published `rustls-pemfile` 2.2.0 is a thin wrapper over the same
+  # code. There is no active vulnerability and no patched upgrade path
+  # short of migrating call sites to `PemObject` on `rustls-pki-types`.
+  # That migration is on the roadmap for the next `tomcatrs-coyote`
+  # refresh; this ignore is reviewed at every release until then.
+  "RUSTSEC-2025-0134",
+]

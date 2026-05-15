@@ -1,0 +1,32 @@
+# CODEOWNERS for Tomcat-RS Compatibility Runtime.
+#
+# GitHub uses this file to request reviews automatically when a PR touches
+# a path that matches one of the patterns below. The last matching pattern
+# wins for any given file.
+#
+# The owner across the board is the project maintainer; specific
+# security-load-bearing crates and top-level governance files are listed
+# explicitly so they cannot fall through to a more permissive default.
+
+# Default owner for everything not matched below.
+*                                       @nktkt
+
+# Top-level policy / governance files.
+/README.md                              @nktkt
+/SECURITY.md                            @nktkt
+/CHANGELOG.md                           @nktkt
+/CONTRIBUTING.md                        @nktkt
+/LICENSE                                @nktkt
+/NOTICE                                 @nktkt
+/ROADMAP.md                             @nktkt
+
+# CI, supply-chain, and Dependabot configuration.
+/.github/                               @nktkt
+/.github/workflows/                     @nktkt
+/.github/CODEOWNERS                     @nktkt
+/deny.toml                              @nktkt
+/.cargo/audit.toml                      @nktkt
+
+# Security-load-bearing crates. Every change here should be eyes-on.
+/crates/tomcatrs-security/              @nktkt
+/crates/tomcatrs-servlet-bridge/        @nktkt

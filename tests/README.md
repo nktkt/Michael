@@ -97,3 +97,28 @@ The corpus is exercised by
 runs `DeploymentScanner::scan` over the corpus root to confirm each fixture is
 discovered as an exploded deployment.
 
+## Real-WAR fixtures (`fixtures/real-wars/`)
+
+Where `fixtures/wars/` ships shape-only fixtures (descriptor + documentation
+source files, no `.class` output), `fixtures/real-wars/` ships **real,
+compilable Java** that the JVM-bridge integration tests run end-to-end.
+
+| Fixture              | What it provides                                                                | Built by                       |
+|----------------------|----------------------------------------------------------------------------------|--------------------------------|
+| `hello-servlet/`     | Single `HttpServlet` + `web.xml`, compiled with `javac` only.                    | `real-wars/build.sh`           |
+| `spring-boot-style/` | Two servlets + filter + listener, compiled with `javac` only (no Spring jars).   | `real-wars/build.sh`           |
+| `sci-fixture/`       | A single `ServletContainerInitializer` for the SCI integration test.             | `real-wars/build.sh`           |
+| `spring-boot-app/`   | A **real** Spring Boot 3.3.x WAR, Maven-built, jars fetched from Maven Central.  | `real-wars/build-spring.sh`    |
+
+The Spring Boot fixture is documented in detail in
+[`docs/spring-boot.md`](../docs/spring-boot.md): prerequisites (JDK 17+,
+Maven), how to run the dedicated integration test
+(`cargo test -p tomcatrs-servlet-bridge --features jvm --test spring_boot`),
+what currently works (servlet 6 deployment, SCI discovery from
+`WEB-INF/lib/*.jar`), and what does not (`@HandlesTypes` scanning, which
+Spring's own SCI relies on to discover `WebApplicationInitializer`s).
+
+The fetched Maven/Spring jars and the exploded WAR tree are
+**git-ignored** — only the `pom.xml` + Java sources are committed, so the
+checkout stays under ~50 KB instead of ~25 MB.
+

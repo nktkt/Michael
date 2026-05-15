@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Real, runnable Spring Boot 3.3.x WAR fixture for the Tomcat-RS JVM-bridge
+  integration tests.
+
+  Layout: a standard, minimal Spring Boot 3 web project that produces a
+  *deployable* WAR (`packaging=war`, with the embedded `tomcat-embed-*`
+  starter scoped `provided` so the WAR runs in a real Servlet container
+  rather than booting its own Tomcat). Targets Jakarta EE 10 / Servlet 6
+  on Java 17+ — the same surface Tomcat-RS's bridge implements.
+
+  The sibling `build-spring.sh` script invokes Maven to produce
+  `target/*.war`, then expands it into `exploded/` so Tomcat-RS can deploy
+  it as an exploded webapp (the project's primary deployment mode).
+
+  No jars from this project are committed to git: `target/` and `exploded/`
+  are both git-ignored. CI / developers fetch them on demand by running
+  the build script.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>org.apache.tomcatrs.fixtures</groupId>
+    <artifactId>spring-boot-app</artifactId>
+    <version>1.0.0</version>
+    <packaging>war</packaging>
+
+    <name>spring-boot-app</name>
+    <description>
+        Minimal real Spring Boot 3.3.x WAR used by the Tomcat-RS JVM-bridge
+        integration tests. Deliberately tiny: one @RestController, one
+        SpringBootServletInitializer, no databases, no security.
+    </description>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <!--
+          Spring Boot 3.3.x: Jakarta EE 10 (jakarta.* packages), Servlet 6,
+          Java 17+. This is the line Tomcat-RS's bridge implements against.
+        -->
+        <version>3.3.5</version>
+        <relativePath/>
+    </parent>
+
+    <properties>
+        <java.version>17</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <!--
+          Keep the produced WAR file name predictable so the build script
+          can locate it without globbing for the version number.
+        -->
+        <final.war.name>spring-boot-app</final.war.name>
+    </properties>
+
+    <dependencies>
+        <!--
+          The web starter brings spring-webmvc + jackson + the embedded
+          Tomcat starter. We need the *API* surface at compile time but
+          NOT the embedded Tomcat at run time — when this WAR is dropped
+          into Tomcat-RS the container provides Servlet 6 itself.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!--
+          Mark the embedded Tomcat starter `provided` so its jars are NOT
+          bundled into WEB-INF/lib/. The deploying container (Tomcat-RS or
+          a real Tomcat 10/11) supplies them. This is the standard recipe
+          for a deployable Spring Boot WAR.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-tomcat</artifactId>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>${final.war.name}</finalName>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

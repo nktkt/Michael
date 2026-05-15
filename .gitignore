@@ -5,3 +5,10 @@
 /work
 /logs
 *.class
+
+# Maven build artefacts under the Spring Boot WAR fixture. The fixture's
+# pom.xml + sources are committed; the multi-megabyte Spring/Tomcat jars
+# (~25 MB) and the WAR / exploded tree are NOT — they are fetched on
+# demand by `tests/fixtures/real-wars/build-spring.sh`.
+tests/fixtures/real-wars/spring-boot-app/target/
+tests/fixtures/real-wars/spring-boot-app/exploded/

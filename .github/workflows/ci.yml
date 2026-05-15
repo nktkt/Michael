@@ -1,0 +1,136 @@
+# Main CI pipeline for the Tomcat-RS Compatibility Runtime.
+#
+# Trade-off note (clippy): the workspace currently carries 28 known clippy
+# warnings inherited from the MVP push. Turning `-D warnings` on day one
+# would block every PR on housekeeping that is unrelated to the change at
+# hand. So clippy is run in *non-blocking* mode: it reports findings via a
+# GitHub workflow annotation but does not fail the job. The intent is to
+# burn the warning count down and then flip `continue-on-error` to `false`
+# once we reach zero. Until then, clippy is a signal, not a gate.
+#
+# All third-party actions are pinned to a versioned ref (tag or SHA-tag)
+# so a single yanked tag cannot silently change the CI behaviour. The
+# Rust toolchain is whatever `rust-toolchain.toml` declares.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on a branch to keep the queue moving.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  fmt:
+    name: cargo fmt --check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Cache cargo registry / target
+        uses: Swatinem/rust-cache@v2.7.3
+        with:
+          shared-key: fmt
+      - name: cargo fmt --all --check
+        run: cargo fmt --all --check
+
+  clippy:
+    name: cargo clippy (non-blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Cache cargo registry / target
+        uses: Swatinem/rust-cache@v2.7.3
+        with:
+          shared-key: clippy
+      # Non-blocking: see top-of-file note. We still surface the warnings
+      # as a workflow annotation so they are not invisible.
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        id: clippy
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Note residual clippy findings
+        if: steps.clippy.outcome == 'failure'
+        run: |
+          echo "::warning::clippy reported warnings (currently non-blocking; track the burn-down to enable -D warnings as a hard gate)."
+
+  build:
+    name: cargo build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Cache cargo registry / target
+        uses: Swatinem/rust-cache@v2.7.3
+        with:
+          shared-key: build-${{ matrix.os }}
+      - name: cargo build --workspace
+        run: cargo build --workspace
+
+  test-default:
+    name: cargo test --workspace (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Cache cargo registry / target
+        uses: Swatinem/rust-cache@v2.7.3
+        with:
+          shared-key: test-${{ matrix.os }}
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+  test-jvm:
+    name: cargo test (jvm feature, JDK 21)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Cache cargo registry / target
+        uses: Swatinem/rust-cache@v2.7.3
+        with:
+          shared-key: test-jvm
+      - name: cargo test -p tomcatrs-servlet-bridge --features jvm
+        run: cargo test -p tomcatrs-servlet-bridge --features jvm
+
+  test-no-default-features:
+    name: cargo build coyote --no-default-features
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Cache cargo registry / target
+        uses: Swatinem/rust-cache@v2.7.3
+        with:
+          shared-key: build-coyote-no-default
+      # Proves the `tls` Cargo feature on tomcatrs-coyote is honestly optional:
+      # the crate must still compile when rustls is unavailable.
+      - name: cargo build -p tomcatrs-coyote --no-default-features
+        run: cargo build -p tomcatrs-coyote --no-default-features

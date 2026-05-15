@@ -28,8 +28,44 @@ cargo fmt --all          # format
 cargo clippy --all-targets --all-features   # lint
 ```
 
-CI expects a clean `cargo fmt` and no `clippy` warnings. Keep functions small,
-prefer explicit error types from `tomcatrs-core`, and document public items.
+CI expects a clean `cargo fmt` and (eventually) no `clippy` warnings. Keep
+functions small, prefer explicit error types from `tomcatrs-core`, and
+document public items.
+
+## Before submitting a PR
+
+The CI workflows under `.github/workflows/` will run the full suite, but
+running the same commands locally first keeps the feedback loop short:
+
+```sh
+cargo fmt --all --check                       # formatting gate
+cargo test --workspace                        # 864-test default suite
+cargo clippy --workspace --all-targets -- -D warnings   # lint
+cargo build -p tomcatrs-coyote --no-default-features    # tls feature off
+```
+
+If you have a JDK 21 installed and are touching the bridge:
+
+```sh
+cargo test -p tomcatrs-servlet-bridge --features jvm
+```
+
+Note that CI also runs the supply-chain suite (`cargo audit`,
+`cargo deny`, OSV-Scanner) on every PR and on a daily cron — see the
+"Continuous security checks" section in [`SECURITY.md`](SECURITY.md).
+You do not need to install those tools to open a PR, but if you want to
+mirror the security job locally:
+
+```sh
+cargo install cargo-audit cargo-deny --locked
+cargo audit
+cargo deny --workspace check
+```
+
+Clippy is currently configured to **report** rather than **block** in CI
+while we burn down a small backlog of existing warnings. Please do not
+add new warnings, and if you can knock one or two off the existing list
+while you are in the area, that is very welcome.
 
 ## Project layout
 

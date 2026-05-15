@@ -355,6 +355,39 @@ policy that overstates the runtime's maturity.
 
 ---
 
+## Continuous security checks
+
+The policy above is enforced by automation on every pull request and on
+a daily schedule, so passive advisories surface without anyone needing
+to remember to run them. The workflows live under
+[`.github/workflows/`](.github/workflows/):
+
+- [`ci.yml`](.github/workflows/ci.yml) — formatting, build, default test
+  suite, the JVM-feature test suite (JDK 21), and a no-default-features
+  build that proves the `tls` Cargo feature on `tomcatrs-coyote` is
+  honestly optional. Clippy currently runs in non-blocking mode while a
+  small backlog of warnings is burnt down; see the comment at the top of
+  the file. Matrix: `ubuntu-latest` and `macos-latest`. Rust toolchain
+  pinned through [`rust-toolchain.toml`](rust-toolchain.toml).
+- [`security.yml`](.github/workflows/security.yml) — supply-chain
+  automation. Runs `cargo audit` (RustSec advisories), `cargo deny`
+  (license, ban, advisory, and source policies driven by
+  [`deny.toml`](deny.toml)), and Google's `osv-scanner`. Triggered on
+  push, on pull request, and on a daily cron at 06:00 UTC.
+- [`release.yml`](.github/workflows/release.yml) — runs on `v*.*.*`
+  tags; produces Linux + macOS release archives with `--features jvm`
+  enabled, plus SHA-256 sidecars, and attaches them to the GitHub
+  Release.
+
+Justified advisory ignores must be recorded in
+[`.cargo/audit.toml`](.cargo/audit.toml) with a comment and a tracking
+issue; the ignore list is reviewed at every release. Dependency updates
+are proposed weekly by Dependabot (configuration in
+[`.github/dependabot.yml`](.github/dependabot.yml)), grouping minor and
+patch bumps per ecosystem.
+
+---
+
 ## Quick links
 
 - GitHub Security Advisories (private): **Security → Advisories →

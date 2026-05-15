@@ -88,6 +88,7 @@ pub mod listener;
 pub mod registration;
 pub mod request_facade;
 pub mod response_facade;
+pub mod sci;
 pub mod session_bridge;
 
 pub use async_servlet::{AsyncContextState, AsyncState};
@@ -97,6 +98,7 @@ pub use invoker::JvmServletInvoker;
 pub use jvm::{JvmConfig, JvmRuntime, WebappRuntime};
 pub use request_facade::RequestHandle;
 pub use response_facade::ResponseHandle;
+pub use sci::{run_sci, SciReport};
 
 use async_trait::async_trait;
 use tomcatrs_core::{ContextId, WrapperId};

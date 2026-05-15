@@ -1,0 +1,75 @@
+# Release workflow.
+#
+# Trigger: pushing a tag of the form `v*.*.*`. The job builds release
+# binaries on Linux and macOS, names them by target triple, and attaches
+# them to a GitHub Release.
+#
+# JVM bridge handling: a JDK 21 (Temurin) is installed unconditionally on
+# the runner so `--features jvm` is always available on a release build.
+# This matches the "ship with bridge support" posture in SECURITY.md.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_suffix: linux-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset_suffix: macos-aarch64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Cache cargo registry / target
+        uses: Swatinem/rust-cache@v2.7.3
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      - name: Build release binary (with jvm feature)
+        run: cargo build --release -p tomcatrs-cli --features jvm
+
+      - name: Stage release artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          bin="target/release/tomcatrs"
+          out="dist/tomcatrs-${GITHUB_REF_NAME}-${{ matrix.asset_suffix }}.tar.gz"
+          tar -czf "${out}" -C "$(dirname "${bin}")" "$(basename "${bin}")"
+          shasum -a 256 "${out}" > "${out}.sha256"
+          echo "ASSET=${out}" >> "$GITHUB_ENV"
+          echo "ASSET_SHA=${out}.sha256" >> "$GITHUB_ENV"
+
+      - name: Upload assets to release
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          files: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET_SHA }}

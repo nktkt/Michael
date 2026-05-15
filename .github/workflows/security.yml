@@ -1,0 +1,85 @@
+# Supply-chain and advisory automation.
+#
+# Three jobs, all aligned with the policy in SECURITY.md:
+#   - audit:    cargo-audit against RustSec advisories.
+#   - deny:     cargo-deny against deny.toml (licenses, bans, sources, advisories).
+#   - osv-scan: Google's OSV scanner against the lockfile.
+#
+# Trigger surface includes a daily cron so that *passive* advisories
+# (i.e. an advisory published against a dependency we already use, with
+# no code change on our side) still surface on a sub-24h cadence.
+#
+# All third-party actions are pinned to a versioned ref.
+
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # 06:00 UTC daily. Picks up overnight RustSec / OSV publications.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Cache cargo registry / target
+        uses: Swatinem/rust-cache@v2.7.3
+        with:
+          shared-key: audit
+          # cargo-audit is the only cargo install on this job; make sure
+          # ~/.cargo/bin is included in the cache.
+          cache-bin: "true"
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      # `cargo audit` fails on any active advisory. Justified ignores must
+      # be registered in .cargo/audit.toml with a comment explaining why.
+      - name: cargo audit
+        run: cargo audit
+
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Cache cargo registry / target
+        uses: Swatinem/rust-cache@v2.7.3
+        with:
+          shared-key: deny
+          cache-bin: "true"
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: cargo deny --workspace check
+        run: cargo deny --workspace check
+
+  # OSV-Scanner is invoked via the reusable workflow published by the
+  # google/osv-scanner-action repository. That workflow handles SARIF
+  # upload to the Security tab itself, so this job just configures
+  # what to scan and the required permissions.
+  osv-scan:
+    name: osv-scanner
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v1.9.1
+    with:
+      scan-args: |-
+        --lockfile=./Cargo.lock
+        --recursive

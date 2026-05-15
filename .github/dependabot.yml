@@ -1,0 +1,54 @@
+# Dependabot configuration.
+#
+# Two ecosystems matter for this repo:
+#   1. The cargo workspace (every `Cargo.toml`).
+#   2. The GitHub Actions used by the workflows under `.github/workflows`.
+#
+# Both run on a weekly cadence. Minor and patch bumps are grouped into a
+# single PR per ecosystem to keep review overhead bounded; major bumps
+# are isolated per-crate so a breaking change does not ride along with
+# patch updates.
+
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "rust"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      cargo-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(ci)"
+      include: "scope"
+    groups:
+      actions-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"

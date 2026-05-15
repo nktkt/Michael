@@ -15,6 +15,7 @@ members = [
     "crates/tomcatrs-cli",
     "crates/tomcatrs-compat-tests",
     "crates/tomcatrs-bench",
+    "crates/tomcatrs-soak",
 ]
 
 [workspace.package]

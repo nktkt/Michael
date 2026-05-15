@@ -1,0 +1,130 @@
+# cargo-deny configuration.
+#
+# Four sections: advisories, licenses, bans, sources. The intent of each
+# choice is documented inline so reviewers can argue with the policy on
+# its merits rather than guessing why a particular ban exists.
+
+[graph]
+# Scan every target the workspace can be built for, so a Linux-only audit
+# does not silently miss a Windows-only dependency.
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------
+# Advisories
+# ---------------------------------------------------------------------------
+# Deny *anything* the RustSec database flags. Unmaintained crates count:
+# an unmaintained transitive is a future advisory that just hasn't been
+# written yet, and the policy in SECURITY.md says we hold our supply chain
+# to "patched-or-out". `cargo audit` enforces the same thing from a
+# different angle in the audit job; cargo-deny gives us a single
+# configuration surface and lets us scope ignores per-id when needed.
+[advisories]
+version = 2
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/RustSec/advisory-db"]
+yanked = "deny"
+ignore = [
+  # Format: { id = "RUSTSEC-YYYY-NNNN", reason = "why we accept this for now" }
+  # Keep this list short and dated; every entry should have an issue
+  # tracking the unignore.
+  { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is unmaintained but only because its parser was upstreamed into rustls-pki-types; the published 2.2.0 is a thin wrapper over that code. Migration to `PemObject` on rustls-pki-types is tracked for the next coyote refresh. No active vulnerability, no available patched upgrade." },
+]
+
+# ---------------------------------------------------------------------------
+# Licenses
+# ---------------------------------------------------------------------------
+# The project itself is Apache-2.0. We accept the common permissive
+# licenses that Apache-2.0 is compatible with for redistribution.
+#
+# Explicitly *not* allowed:
+#   - GPL-only families (GPL-2.0, GPL-3.0, AGPL-3.0) — pulling them into
+#     an Apache-2.0 binary would force re-licensing of the whole work,
+#     which is incompatible with the project's licensing posture.
+#   - SSPL-1.0 — not OSI-approved; effectively a server-side copyleft
+#     designed to block managed-service redistribution. We do not want
+#     even a transitive SSPL crate sneaking in.
+#   - "LGPL-with-linking-exception" variants — handled case-by-case
+#     via `exceptions` if and when one shows up.
+[licenses]
+version = 2
+confidence-threshold = 0.93
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "MIT-0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "CC0-1.0",
+  "Unicode-DFS-2016",
+  "Unicode-3.0",
+  "Zlib",
+  "MPL-2.0",
+  "OpenSSL",
+]
+# Note: any explicit license string that resolves to one of the GPL or
+# SSPL families is implicitly denied because it is absent from `allow`
+# under v2 of the schema. Listed below for documentation.
+exceptions = []
+
+# Crate-specific clarifications go here when an automatic detection is
+# ambiguous (e.g. the `ring` crate's mixed license).
+[[licenses.clarify]]
+name = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [
+  { path = "LICENSE", hash = 0xbd0eed23 },
+]
+
+# ---------------------------------------------------------------------------
+# Bans
+# ---------------------------------------------------------------------------
+# `multiple-versions = "warn"` rather than `"deny"` on day one:
+#
+#   A 14-crate Rust workspace with full tokio + hyper + rustls almost
+#   always carries a handful of dup-version crates because subtrees pin
+#   their own minor lines (windows-sys, hashbrown, socket2 ...). Hard-
+#   denying that on the first run blocks PRs on third-party update
+#   cadence. So we warn now, allow a small set of known-safe
+#   duplications, and tighten to `"deny"` once the warn-set is quiet.
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+# Known-safe duplicates. Each entry should have a reason.
+skip = [
+  # Win32 binding crate; multiple-version drift is endemic across the
+  # ecosystem and benign — different subtrees pin different minor lines
+  # but they all compile to the same ABI surface.
+  { name = "windows-sys" },
+  # Same story for the `hashbrown` table crate: pulled in directly by
+  # `std`, by `indexmap`, and by `dashmap`/others on a slower cadence.
+  { name = "hashbrown" },
+]
+
+# Outright bans (no version skipped).
+deny = [
+  # Add crates here if they should never appear in the graph. Example
+  # template:
+  #   { name = "openssl", reason = "TLS is rustls-backed; OpenSSL would bloat the supply chain and add a C dep" },
+]
+
+# ---------------------------------------------------------------------------
+# Sources
+# ---------------------------------------------------------------------------
+# We only accept crates from crates.io. Git dependencies and alternate
+# registries are denied so a typo-squat on a private registry or a
+# rogue Git URL can't sneak into the lockfile.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
