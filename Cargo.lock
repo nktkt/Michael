@@ -80,15 +80,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
-name = "arbitrary"
-version = "1.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
-dependencies = [
- "derive_arbitrary",
-]
-
-[[package]]
 name = "arc-swap"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -362,17 +353,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "derive_arbitrary"
-version = "1.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e567bd82dcff979e4b03460c307b3cdc9e96fde3d73bed1496d2bc75d9dd62a"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -435,6 +415,7 @@ checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
+ "zlib-rs",
 ]
 
 [[package]]
@@ -781,7 +762,7 @@ dependencies = [
  "jni-sys 0.3.1",
  "libloading",
  "log",
- "thiserror 1.0.69",
+ "thiserror",
  "walkdir",
  "windows-sys 0.45.0",
 ]
@@ -1487,16 +1468,7 @@ version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
 dependencies = [
- "thiserror-impl 1.0.69",
-]
-
-[[package]]
-name = "thiserror"
-version = "2.0.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4288b5bcbc7920c07a1149a35cf9590a2aa808e0bc1eafaade0b80947865fbc4"
-dependencies = [
- "thiserror-impl 2.0.18",
+ "thiserror-impl",
 ]
 
 [[package]]
@@ -1504,17 +1476,6 @@ name = "thiserror-impl"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "thiserror-impl"
-version = "2.0.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebc4ee7f67670e9b64d05fa4253e753e016c6c95ff35b89b7941d6b856dec1d5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1642,7 +1603,7 @@ dependencies = [
  "dashmap",
  "parking_lot",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror",
  "tokio",
  "tomcatrs-config",
  "tomcatrs-core",
@@ -1691,7 +1652,7 @@ version = "1.0.0"
 dependencies = [
  "quick-xml",
  "serde",
- "thiserror 1.0.69",
+ "thiserror",
  "tomcatrs-core",
  "tracing",
 ]
@@ -1701,7 +1662,7 @@ name = "tomcatrs-core"
 version = "1.0.0"
 dependencies = [
  "async-trait",
- "thiserror 1.0.69",
+ "thiserror",
  "tokio",
  "tracing",
 ]
@@ -1716,7 +1677,7 @@ dependencies = [
  "rustls",
  "rustls-pemfile",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror",
  "tokio",
  "tokio-rustls",
  "tomcatrs-config",
@@ -1730,7 +1691,7 @@ version = "1.0.0"
 dependencies = [
  "jni",
  "quick-xml",
- "thiserror 1.0.69",
+ "thiserror",
  "tomcatrs-core",
  "tomcatrs-servlet-bridge",
  "tracing",
@@ -1748,7 +1709,7 @@ dependencies = [
  "once_cell",
  "parking_lot",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror",
  "tokio",
  "tomcatrs-core",
  "tomcatrs-coyote",
@@ -1767,7 +1728,7 @@ dependencies = [
  "quick-xml",
  "rand",
  "sha2",
- "thiserror 1.0.69",
+ "thiserror",
  "tokio",
  "tomcatrs-config",
  "tomcatrs-core",
@@ -1782,7 +1743,7 @@ dependencies = [
  "bytes",
  "dashmap",
  "jni",
- "thiserror 1.0.69",
+ "thiserror",
  "tokio",
  "tomcatrs-config",
  "tomcatrs-core",
@@ -1802,7 +1763,7 @@ dependencies = [
  "redis",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror",
  "tokio",
  "tomcatrs-core",
  "tracing",
@@ -1825,7 +1786,7 @@ name = "tomcatrs-webapp"
 version = "1.0.0"
 dependencies = [
  "quick-xml",
- "thiserror 1.0.69",
+ "thiserror",
  "tomcatrs-core",
  "tracing",
  "zip",
@@ -1839,7 +1800,7 @@ dependencies = [
  "bytes",
  "flate2",
  "sha1",
- "thiserror 1.0.69",
+ "thiserror",
  "tokio",
  "tomcatrs-core",
  "tracing",
@@ -1905,6 +1866,12 @@ dependencies = [
  "tracing-core",
  "tracing-log",
 ]
+
+[[package]]
+name = "typed-path"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
 
 [[package]]
 name = "typenum"
@@ -2433,20 +2400,23 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "2.4.2"
+version = "8.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fabe6324e908f85a1c52063ce7aa26b68dcb7eb6dbc83a2d148403c9bc3eba50"
+checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
 dependencies = [
- "arbitrary",
  "crc32fast",
- "crossbeam-utils",
- "displaydoc",
  "flate2",
  "indexmap",
  "memchr",
- "thiserror 2.0.18",
+ "typed-path",
  "zopfli",
 ]
+
+[[package]]
+name = "zlib-rs"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3be3d40e40a133f9c916ee3f9f4fa2d9d63435b5fbe1bfc6d9dae0aa0ada1513"
 
 [[package]]
 name = "zmij"

@@ -18,4 +18,4 @@ tracing.workspace = true
 # (a jar is a zip). `deflate` is required because jar entries are commonly
 # DEFLATE-compressed; the other default features (encryption, bzip2, zstd, …)
 # are not needed for classpath scanning, so they are turned off.
-zip = { version = "2.2", default-features = false, features = ["deflate"] }
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
