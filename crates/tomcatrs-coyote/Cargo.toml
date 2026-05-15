@@ -36,5 +36,5 @@ tls = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]
 
 [dev-dependencies]
 # Self-signed certificate generation for the TLS handshake tests.
-rcgen = "0.13"
+rcgen = "0.14"
 tempfile = "3"
