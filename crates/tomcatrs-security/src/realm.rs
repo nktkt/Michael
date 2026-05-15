@@ -60,6 +60,46 @@ pub trait Realm: Send + Sync {
 
     /// Returns `true` if `principal` is a member of `role`.
     async fn has_role(&self, principal: &Principal, role: &str) -> bool;
+
+    /// Supply the HTTP `DIGEST` `HA1` value for `username` in `realm`.
+    ///
+    /// HTTP Digest authentication (RFC 7616 / RFC 2617) is built around
+    /// `HA1 = MD5(username:realm:password)`. A realm that stores only a
+    /// SHA-256 password hash — as [`InMemoryRealm`] does by default — *cannot*
+    /// derive this value, because the original password is gone and MD5 and
+    /// SHA-256 are unrelated. Such a realm must return `None`, and the
+    /// [`DigestAuthenticator`](crate::auth_digest::DigestAuthenticator) will
+    /// then correctly refuse the request.
+    ///
+    /// A realm that *does* hold digest-compatible material (the plaintext
+    /// password, or a pre-computed `HA1`) overrides this method to return the
+    /// lowercase-hex `HA1`. [`InMemoryRealm`] does so for users registered with
+    /// [`InMemoryRealm::add_digest_user`] /
+    /// [`InMemoryRealm::with_digest_user`].
+    ///
+    /// The default implementation returns `None`, so this addition is fully
+    /// backwards-compatible: existing realms keep compiling and simply do not
+    /// support `DIGEST`.
+    async fn digest_ha1(&self, _username: &str, _realm: &str) -> Option<String> {
+        None
+    }
+}
+
+/// Compute the HTTP Digest `HA1 = MD5(username:realm:password)` value as a
+/// lowercase hex string.
+///
+/// This is the digest-compatible secret a [`Realm`] must be able to supply for
+/// `DIGEST` authentication to work. It is exposed at module level so the
+/// `add_digest_user` path and any external realm implementation derive `HA1`
+/// the exact same way.
+pub fn digest_ha1(username: &str, realm: &str, password: &str) -> String {
+    let digest = md5::compute(format!("{username}:{realm}:{password}").as_bytes());
+    let mut hex = String::with_capacity(32);
+    for byte in digest.0 {
+        use std::fmt::Write;
+        let _ = write!(hex, "{:02x}", byte);
+    }
+    hex
 }
 
 /// Hash a plaintext credential with SHA-256 and return the lowercase hex
@@ -79,12 +119,20 @@ fn hash_credential(credential: &str) -> String {
     hex
 }
 
-/// A single stored account: the SHA-256 hash of the password plus the user's
-/// roles.
+/// A single stored account: the SHA-256 hash of the password, the user's
+/// roles, and — optionally — a digest-compatible `HA1` value.
+///
+/// `digest_ha1` is `Some` only when the user was registered through
+/// [`InMemoryRealm::add_digest_user`] / [`InMemoryRealm::with_digest_user`],
+/// which are the only entry points that retain enough information to compute
+/// `MD5(username:realm:password)`. Users added through the plain
+/// [`InMemoryRealm::add_user`] path leave it `None`, and `DIGEST`
+/// authentication for them is (correctly) impossible.
 #[derive(Debug, Clone)]
 struct StoredUser {
     credential_hash: String,
     roles: Vec<String>,
+    digest_ha1: Option<String>,
 }
 
 /// A fully-working in-memory [`Realm`].
@@ -127,6 +175,7 @@ impl InMemoryRealm {
         let stored = StoredUser {
             credential_hash: hash_credential(password),
             roles,
+            digest_ha1: None,
         };
         self.users.write().insert(username, stored);
     }
@@ -142,6 +191,47 @@ impl InMemoryRealm {
         roles: Vec<String>,
     ) -> Self {
         self.add_user(username, password, roles);
+        self
+    }
+
+    /// Add (or replace) a user that can additionally authenticate via HTTP
+    /// `DIGEST`.
+    ///
+    /// In addition to the SHA-256 password hash kept for `BASIC`/`FORM`
+    /// authentication, this stores the digest-compatible
+    /// `HA1 = MD5(username:realm:password)` value, computed for the supplied
+    /// `digest_realm`. The `digest_realm` **must** match the realm name the
+    /// [`DigestAuthenticator`](crate::auth_digest::DigestAuthenticator)
+    /// advertises in its challenge, because `HA1` is bound to it.
+    ///
+    /// Storing `HA1` (rather than the plaintext password) is the standard
+    /// Tomcat `MemoryRealm` approach: the plaintext never has to be retained,
+    /// yet `DIGEST` still works.
+    pub fn add_digest_user(
+        &self,
+        username: impl Into<String>,
+        digest_realm: &str,
+        password: &str,
+        roles: Vec<String>,
+    ) {
+        let username = username.into();
+        let stored = StoredUser {
+            credential_hash: hash_credential(password),
+            roles,
+            digest_ha1: Some(digest_ha1(&username, digest_realm, password)),
+        };
+        self.users.write().insert(username, stored);
+    }
+
+    /// Builder-style variant of [`add_digest_user`](Self::add_digest_user).
+    pub fn with_digest_user(
+        self,
+        username: impl Into<String>,
+        digest_realm: &str,
+        password: &str,
+        roles: Vec<String>,
+    ) -> Self {
+        self.add_digest_user(username, digest_realm, password, roles);
         self
     }
 
@@ -176,6 +266,14 @@ impl Realm for InMemoryRealm {
         // The principal already carries its granted roles; the realm simply
         // confirms membership. A database-backed realm would re-query here.
         principal.has_role(role)
+    }
+
+    async fn digest_ha1(&self, username: &str, _realm: &str) -> Option<String> {
+        // Only users registered via `add_digest_user` carry an `HA1`. The
+        // value was bound to a specific realm at insertion time; the caller
+        // (the authenticator) is responsible for advertising that same realm,
+        // so we return the stored value as-is rather than recomputing it.
+        self.users.read().get(username)?.digest_ha1.clone()
     }
 }
 
@@ -222,5 +320,36 @@ mod tests {
         let p = Principal::new("carol", vec!["admin".into()]);
         assert!(realm.has_role(&p, "admin").await);
         assert!(!realm.has_role(&p, "guest").await);
+    }
+
+    #[test]
+    fn digest_ha1_helper_matches_rfc_definition() {
+        // RFC 2617 §3.2.2.2: HA1 = MD5(username:realm:password).
+        // MD5("Mufasa:testrealm@host.com:Circle Of Life") is a well-known
+        // worked example from the RFC.
+        let ha1 = digest_ha1("Mufasa", "testrealm@host.com", "Circle Of Life");
+        assert_eq!(ha1, "939e7578ed9e3c518a452acee763bce9");
+    }
+
+    #[tokio::test]
+    async fn plain_users_have_no_digest_ha1() {
+        let realm = InMemoryRealm::new().with_user("alice", "pw", vec![]);
+        assert!(realm.digest_ha1("alice", "realm").await.is_none());
+        // Unknown user also yields None.
+        assert!(realm.digest_ha1("nobody", "realm").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn digest_users_expose_ha1_and_still_do_basic() {
+        let realm =
+            InMemoryRealm::new().with_digest_user("bob", "realm", "pw", vec!["user".into()]);
+        // DIGEST material is available...
+        assert_eq!(
+            realm.digest_ha1("bob", "realm").await,
+            Some(digest_ha1("bob", "realm", "pw"))
+        );
+        // ...and the SHA-256 password path still works for BASIC/FORM.
+        assert!(realm.authenticate("bob", "pw").await.unwrap().is_some());
+        assert!(realm.authenticate("bob", "nope").await.unwrap().is_none());
     }
 }

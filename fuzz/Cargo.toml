@@ -1,0 +1,99 @@
+# Fuzzing harness for the Tomcat-RS Compatibility Runtime.
+#
+# This is a *separate* crate, deliberately NOT a member of the root workspace
+# (cargo-fuzz crates are excluded by convention: they require a nightly
+# toolchain and the libFuzzer sanitizer runtime, neither of which should be
+# imposed on the main workspace build). The empty `[workspace]` table below
+# makes this directory its own workspace root.
+#
+# Run a target with:
+#
+#     cargo +nightly fuzz run http1_request
+#
+# See README.md for the full list of targets and the corpus layout.
+
+[package]
+name = "tomcatrs-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# Path dependencies on the crates whose parser/protocol surfaces we fuzz.
+tomcatrs-coyote = { path = "../crates/tomcatrs-coyote" }
+tomcatrs-security = { path = "../crates/tomcatrs-security" }
+tomcatrs-core = { path = "../crates/tomcatrs-core" }
+# `tomcatrs-config` supplies `RequestLimits`, which the HTTP/1.1 and chunked
+# parsers take as their configuration input — the fuzz targets construct a
+# `RequestLimits::default()` and feed it in.
+tomcatrs-config = { path = "../crates/tomcatrs-config" }
+# The HTTP/1.1 connector entry point is `async`, so the http1_request target
+# needs a runtime to drive a single parse to completion against an in-memory
+# cursor. A current-thread runtime with no I/O/timer features is enough.
+tokio = { version = "1", features = ["rt", "io-util", "macros"] }
+async-trait = "0.1"
+bytes = "1"
+
+# An empty `[workspace]` table makes `fuzz/` its own workspace, so the main
+# workspace at the repository root never pulls these targets (or libfuzzer-sys)
+# into a normal `cargo build --workspace`.
+[workspace]
+
+# libFuzzer needs an unwinding panic so a panic is caught and reported as a
+# crash rather than aborting the process before the harness can symbolize it.
+[profile.release]
+debug = 1
+panic = "unwind"
+
+[[bin]]
+name = "http1_request"
+path = "fuzz_targets/http1_request.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "http2_frame"
+path = "fuzz_targets/http2_frame.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "hpack_decode"
+path = "fuzz_targets/hpack_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "ajp_forward_request"
+path = "fuzz_targets/ajp_forward_request.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "uri_normalize"
+path = "fuzz_targets/uri_normalize.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "chunked_decode"
+path = "fuzz_targets/chunked_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "cookie_parse"
+path = "fuzz_targets/cookie_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "access_control"
+path = "fuzz_targets/access_control.rs"
+test = false
+doc = false
