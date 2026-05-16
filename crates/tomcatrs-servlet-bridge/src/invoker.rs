@@ -209,15 +209,33 @@ async fn invoke_impl(
         }
     };
 
+    // Resolve the nativeContextId for this webapp's context path. The Rust
+    // context registry (populated by `WebappRegistrar::register`) is the
+    // canonical name → id index; the resulting id is what the session-
+    // resolution natives use to find the per-webapp SessionManager. A `0`
+    // here means "no context registered" — the request facade still works
+    // but `getSession(true)` returns null. (This happens when a test invokes
+    // a servlet without going through WebappRegistrar; the dispatch path
+    // does not treat it as fatal.)
+    let native_context_id = crate::jni::context_registry().lookup_id_for_path(&context);
+
     // 3. Cross into the JVM on an attached worker thread and dispatch.
     let dispatch = runtime.with_env(|env| -> Result<()> {
         // Build the Java-side facade objects, passing the opaque native ids.
         // Their accessors call back into the natives registered by `crate::jni`.
+        // The 3-arg request-facade constructor attaches the context id and
+        // response id so session resolution and Set-Cookie emission work
+        // end-to-end; the legacy 1-arg constructor is kept for tests that
+        // construct a facade by hand.
         let req_facade = env
             .new_object(
                 "org/apache/tomcatrs/bridge/TomcatRsRequestFacade",
-                "(J)V",
-                &[jni::objects::JValue::Long(request_id)],
+                "(JJJ)V",
+                &[
+                    jni::objects::JValue::Long(request_id),
+                    jni::objects::JValue::Long(native_context_id),
+                    jni::objects::JValue::Long(response_id),
+                ],
             )
             .map_err(|e| Error::bridge(format!("constructing request facade failed: {e}")))?;
         let res_facade = env

@@ -23,6 +23,8 @@ public interface HttpServletRequest extends ServletRequest {
 
     String getQueryString();
 
+    Cookie[] getCookies();
+
     String getHeader(String name);
 
     Enumeration<String> getHeaderNames();

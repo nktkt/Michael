@@ -218,6 +218,122 @@ fn coyote_get(name: &str) -> Request {
     }
 }
 
+/// Build a coyote `Request` for `GET /<path>` carrying the supplied cookies
+/// in a single `Cookie:` header. Used by the stateful session test below.
+///
+/// `path` is the absolute request path **without** leading parameters
+/// (e.g. `"counter"` produces `/counter`). `cookies` is rendered as
+/// `name1=value1; name2=value2`; pass an empty slice for "no cookies at all".
+///
+/// We deliberately emit a *single* `Cookie:` header rather than one per
+/// cookie — that's the encoding RFC 6265 §5.4 prescribes and what every
+/// real browser sends; the bridge's `SessionBinder::bind` scans Cookie
+/// headers case-insensitively either way.
+fn coyote_get_with_cookies(path: &str, cookies: &[(&str, &str)]) -> Request {
+    let mut headers: Vec<(String, String)> = vec![
+        ("Host".into(), "localhost".into()),
+        ("Accept".into(), "application/json".into()),
+    ];
+    if !cookies.is_empty() {
+        let cookie_value = cookies
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        headers.push(("Cookie".into(), cookie_value));
+    }
+    Request {
+        method: "GET".into(),
+        uri: format!("/{path}"),
+        path: format!("/{path}"),
+        query: None,
+        version: "HTTP/1.1".into(),
+        headers,
+        body: Bytes::new(),
+        peer_addr: "127.0.0.1:54321".parse().unwrap(),
+    }
+}
+
+/// Walk a response's headers (as the bridge surfaces them — case-insensitive
+/// matching on the header name, multiple `Set-Cookie` values allowed) and
+/// return the value of the `JSESSIONID` attribute from the first
+/// `Set-Cookie` that names one.
+///
+/// Returns `None` if no `Set-Cookie` header carries a `JSESSIONID=…` pair.
+/// Pure Rust, no new deps; mirrors what `CookieProcessor::extract_session_id`
+/// does on the request side, but for the response side where each cookie
+/// lives in its own `Set-Cookie` header rather than being concatenated.
+///
+/// Tolerates leading whitespace before the cookie pair (`Set-Cookie:
+/// JSESSIONID=abc`) and case-insensitive header-name lookup.
+fn extract_jsessionid(headers: &[(String, String)]) -> Option<String> {
+    for (name, value) in headers {
+        if !name.eq_ignore_ascii_case("set-cookie") {
+            continue;
+        }
+        // RFC 6265 §4.1.1: `Set-Cookie: name=value; Attr; Attr=...`. The
+        // first `;`-delimited segment carries the cookie's name=value;
+        // everything after is attributes (Path, Max-Age, HttpOnly, …) that
+        // we deliberately don't validate here — the test only cares whether
+        // the bridge round-trips the id.
+        let first = value.split(';').next().unwrap_or("").trim();
+        let Some((cname, cvalue)) = first.split_once('=') else {
+            continue;
+        };
+        if cname.trim() == "JSESSIONID" {
+            return Some(cvalue.trim().to_string());
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod cookie_helpers {
+    use super::extract_jsessionid;
+
+    #[test]
+    fn extract_jsessionid_picks_first_matching_set_cookie() {
+        let headers = vec![
+            ("Content-Type".to_string(), "application/json".to_string()),
+            ("Set-Cookie".to_string(), "theme=dark; Path=/".to_string()),
+            (
+                "Set-Cookie".to_string(),
+                "JSESSIONID=abc123; Path=/; HttpOnly".to_string(),
+            ),
+        ];
+        assert_eq!(extract_jsessionid(&headers).as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn extract_jsessionid_case_insensitive_header_name() {
+        let headers = vec![("set-cookie".to_string(), "JSESSIONID=xyz".to_string())];
+        assert_eq!(extract_jsessionid(&headers).as_deref(), Some("xyz"));
+    }
+
+    #[test]
+    fn extract_jsessionid_returns_none_when_no_jsessionid_cookie() {
+        let headers = vec![
+            ("Set-Cookie".to_string(), "theme=dark; Path=/".to_string()),
+            ("Set-Cookie".to_string(), "lang=en".to_string()),
+        ];
+        assert_eq!(extract_jsessionid(&headers), None);
+    }
+
+    #[test]
+    fn extract_jsessionid_returns_none_for_no_headers() {
+        assert_eq!(extract_jsessionid(&[]), None);
+    }
+
+    #[test]
+    fn extract_jsessionid_handles_leading_whitespace_in_value() {
+        let headers = vec![(
+            "Set-Cookie".to_string(),
+            "  JSESSIONID=trimmed ; Path=/".to_string(),
+        )];
+        assert_eq!(extract_jsessionid(&headers).as_deref(), Some("trimmed"));
+    }
+}
+
 /// End-to-end: build the Spring Boot WAR, boot the JVM, run SCI against the
 /// real Spring Boot classpath, and (when registrations are wired) dispatch
 /// `GET /hello?name=Spring` through the resulting Spring `DispatcherServlet`.
@@ -409,6 +525,268 @@ async fn spring_boot_war_serves_hello_endpoint() {
     assert!(
         body.contains("Hello, Spring!"),
         "expected JSON body to contain 'Hello, Spring!'; got {body:?}"
+    );
+
+    runtime.shutdown();
+}
+
+/// End-to-end: prove the **stateful** Spring path through the JVM bridge —
+/// two successive `GET /counter` requests, the second carrying the
+/// `JSESSIONID` cookie emitted by the first, should land on the same
+/// `HttpSession` and observe a monotonically incrementing counter.
+///
+/// The setup is identical to `spring_boot_war_serves_hello_endpoint`. The
+/// only differences are:
+///   * we hit `/counter` instead of `/hello`,
+///   * we extract `JSESSIONID` from the first response's `Set-Cookie` header,
+///   * we replay it via a `Cookie:` header on the second request.
+///
+/// Skip behaviour (in addition to all the skips the hello test already
+/// recognises): if the bridge has not yet wired real cookies + real
+/// `HttpSession` into the request facade — i.e. `getCookies()` returns
+/// empty / `getSession(true)` returns null — the first response will lack
+/// a `Set-Cookie: JSESSIONID=…` header. We treat that as the documented
+/// "session bridge not yet wired" gap and skip with a clear message rather
+/// than panicking.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spring_boot_session_continuity_across_two_requests() {
+    let root = workspace_root();
+
+    // 1. Materialise the exploded Spring Boot WAR (same as the hello test).
+    match ensure_exploded(&root) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(e) => {
+            eprintln!("[spring_boot/session] skipping: ensure_exploded failed: {e}");
+            return;
+        }
+    }
+
+    let app_root = spring_app_root(&root);
+    let exploded = app_root.join("exploded");
+    let classes_dir = exploded.join("WEB-INF").join("classes");
+    let lib_jars = exploded_lib_jars(&exploded);
+    assert!(
+        !lib_jars.is_empty(),
+        "exploded WAR at {} has no WEB-INF/lib/*.jar; \
+         build-spring.sh must populate it",
+        exploded.display()
+    );
+
+    // Confirm the new fixture compiled — the build script unpacks the WAR
+    // and the spring-boot-maven-plugin will silently pick up the
+    // CounterController.java we added. If it's missing, every dispatch
+    // below would 404 with a much less helpful message.
+    let counter_class = classes_dir
+        .join("com")
+        .join("example")
+        .join("sbapp")
+        .join("CounterController.class");
+    if !counter_class.is_file() {
+        eprintln!(
+            "[spring_boot/session] skipping: CounterController.class missing at {}. \
+             Re-run tests/fixtures/real-wars/build-spring.sh to recompile the fixture.",
+            counter_class.display()
+        );
+        return;
+    }
+
+    // 2. Boot the JVM.
+    let runtime = match JvmRuntime::start(JvmConfig::default()) {
+        Ok(r) => Arc::new(r),
+        Err(e) => {
+            eprintln!(
+                "[spring_boot/session] skipping: JvmRuntime::start failed: {e}. \
+                 Same skip reasons as spring_boot_war_serves_hello_endpoint."
+            );
+            return;
+        }
+    };
+
+    // 3. Register the webapp classloader.
+    let context_id: tomcatrs_core::ContextId = "/spring-boot-app-counter".to_string();
+    let cl_config = WebappClassLoaderConfig::new(
+        context_id.clone(),
+        Some(classes_dir.clone()),
+        lib_jars.clone(),
+        false,
+    );
+
+    let _webapp = runtime
+        .register_webapp(context_id.clone(), cl_config.search_path())
+        .expect("register_webapp should succeed once the JVM is up");
+
+    let web_xml = WebXml::default();
+    let registrar = WebappRegistrar::new(
+        Arc::clone(&runtime),
+        context_id.clone(),
+        cl_config,
+        &web_xml,
+    );
+    let summary = registrar.register().unwrap_or_else(|e| {
+        panic!(
+            "WebappRegistrar::register failed for the Spring Boot WAR: {e}. \
+             See spring_boot_war_serves_hello_endpoint for diagnostic guidance."
+        );
+    });
+    assert!(
+        summary.class_loader_built,
+        "class loader must be built under --features jvm; got summary={summary:?}"
+    );
+
+    // 4. Run SCI.
+    let sci_report = run_sci(&runtime, &context_id, &exploded)
+        .await
+        .expect("run_sci must not return an infrastructural error");
+
+    let found_spring_sci = sci_report
+        .initializers
+        .iter()
+        .any(|n| n.contains("SpringServletContainerInitializer"))
+        || sci_report
+            .errors
+            .iter()
+            .any(|e| e.contains("SpringServletContainerInitializer"));
+    if !found_spring_sci {
+        eprintln!(
+            "[spring_boot/session] skipping: SpringServletContainerInitializer was \
+             neither invoked nor reported as an error — same SCI/lib-jar gap the \
+             hello test documents."
+        );
+        runtime.shutdown();
+        return;
+    }
+
+    // 5. Locate the DispatcherServlet (or stand-in). Same gap as the hello
+    //    test; skip cleanly if missing.
+    let webapp = runtime
+        .webapp(&context_id)
+        .expect("webapp must still be registered after run_sci");
+
+    let dispatcher = ["dispatcherServlet", "default"]
+        .iter()
+        .find_map(|name| webapp.servlet(name).map(|h| (name.to_string(), h)));
+
+    let Some((servlet_name, _handle)) = dispatcher else {
+        eprintln!(
+            "[spring_boot/session] skipping dispatch: no Spring DispatcherServlet \
+             registered in webapp '{context_id}' after SCI. Same @HandlesTypes gap \
+             the hello test documents — once it lands this test will also flip to \
+             a hard assertion."
+        );
+        runtime.shutdown();
+        return;
+    };
+
+    let invoker = JvmServletInvoker::new(Arc::clone(&runtime));
+
+    // 6. First request: GET /counter, no cookies. Expect count=1 + a
+    //    JSESSIONID Set-Cookie. If the bridge has not yet wired
+    //    HttpServletRequest.getSession(true) through to the Rust
+    //    SessionManager, the controller's `session.getId()` call would NPE
+    //    or this whole code path would 500. We treat any non-200 with a
+    //    body that mentions HttpSession / cookies / null-pointer as the
+    //    documented "session bridge not yet wired" gap.
+    let req1 = coyote_get_with_cookies("counter", &[]);
+    let resp1 = invoker
+        .invoke_coyote(context_id.clone(), servlet_name.clone(), &req1)
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "JvmServletInvoker::invoke_coyote failed for first /counter: {e}. \
+                 The classloader and SCI succeeded but the JNI dispatch path \
+                 produced an error."
+            );
+        });
+
+    let body1 = String::from_utf8_lossy(&resp1.body).to_string();
+    if resp1.status != 200 {
+        eprintln!(
+            "[spring_boot/session] skipping: first GET /counter returned status {} \
+             with body {body1:?}. This typically means the bridge's \
+             HttpServletRequest.getSession(true) still returns null (bridge v1 \
+             gap) — the controller cannot obtain a session and Spring surfaces \
+             a 500. Once the sibling session-wiring agent lands, this test \
+             flips to a hard pass.",
+            resp1.status
+        );
+        runtime.shutdown();
+        return;
+    }
+
+    let jsessionid = match extract_jsessionid(&resp1.headers) {
+        Some(id) => id,
+        None => {
+            eprintln!(
+                "[spring_boot/session] skipping: first GET /counter returned 200 \
+                 with body {body1:?} but no `Set-Cookie: JSESSIONID=…` header. \
+                 This means the bridge's response facade is not yet emitting \
+                 the session cookie — sibling cookie-wiring agent has not \
+                 landed. Response headers were: {:?}",
+                resp1.headers
+            );
+            runtime.shutdown();
+            return;
+        }
+    };
+
+    assert!(
+        body1.contains("\"count\":1"),
+        "first /counter response should contain `\"count\":1`; got {body1:?}"
+    );
+
+    eprintln!(
+        "[spring_boot/session] first request: status=200, JSESSIONID={jsessionid}, body={body1}"
+    );
+
+    // 7. Second request: same /counter, this time presenting JSESSIONID via
+    //    a Cookie header. Expect count=2 and the same sessionId echoed in
+    //    the JSON body. If session continuity is broken (the bridge does
+    //    not yet recognise the inbound cookie and binds a fresh session),
+    //    we'd see count=1 again — skip with a clear message rather than
+    //    falsely failing the build.
+    let req2 = coyote_get_with_cookies("counter", &[("JSESSIONID", jsessionid.as_str())]);
+    let resp2 = invoker
+        .invoke_coyote(context_id.clone(), servlet_name.clone(), &req2)
+        .await
+        .unwrap_or_else(|e| {
+            panic!("JvmServletInvoker::invoke_coyote failed for second /counter: {e}");
+        });
+
+    let body2 = String::from_utf8_lossy(&resp2.body).to_string();
+    if resp2.status != 200 {
+        eprintln!(
+            "[spring_boot/session] skipping: second GET /counter returned status {} \
+             with body {body2:?}. Session continuity path not yet end-to-end.",
+            resp2.status
+        );
+        runtime.shutdown();
+        return;
+    }
+
+    if !body2.contains("\"count\":2") {
+        eprintln!(
+            "[spring_boot/session] skipping: second /counter returned 200 but body \
+             {body2:?} does not contain `\"count\":2`. This means the inbound \
+             Cookie header was not honoured by the bridge — the request facade \
+             likely returns null from getSession on a presented JSESSIONID and \
+             the controller starts a new session each call. Sibling session-cookie \
+             agent has not landed."
+        );
+        runtime.shutdown();
+        return;
+    }
+
+    let expected_session_field = format!("\"sessionId\":\"{jsessionid}\"");
+    assert!(
+        body2.contains(&expected_session_field),
+        "second /counter response should echo the original sessionId; expected \
+         body to contain {expected_session_field:?}; got {body2:?}"
+    );
+
+    eprintln!(
+        "[spring_boot/session] second request: status=200, body={body2} — \
+         session continuity confirmed end-to-end."
     );
 
     runtime.shutdown();

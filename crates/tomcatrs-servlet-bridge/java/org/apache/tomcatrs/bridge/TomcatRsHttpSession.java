@@ -16,10 +16,23 @@ import jakarta.servlet.http.HttpSession;
  * drives the Rust-side {@code tomcatrs_session::SessionManager}. No session
  * state lives on the Java heap.
  *
- * <p>In v1.0.0 session attribute values are string-valued: {@code setAttribute}
- * stringifies its argument before crossing JNI and {@code getAttribute} returns
- * the stored {@code String}. A future release introduces a typed attribute
- * value.
+ * <p><strong>Honest gap (v1.0.0): attribute values are String-typed.</strong>
+ * The Rust {@code SessionData::attributes} is a
+ * {@code HashMap<String, String>}, so {@link #setAttribute(String, Object)}
+ * stringifies its argument before crossing JNI and {@link #getAttribute}
+ * returns the stored {@code String}. Framework code that stores typed objects
+ * (e.g. Spring Security's {@code SecurityContext}) will get a {@code String}
+ * when reading back. A future release will introduce a typed attribute value
+ * across the JNI boundary; for now, applications can opt into JSON / custom
+ * serialisation on top of the string surface.
+ *
+ * <p><strong>Honest gap (v1.0.0):
+ * {@code HttpSessionListener.sessionCreated} is not driven from this
+ * facade.</strong> Listeners are recorded in the registration plan but not
+ * invoked when a new session is created via the request facade's
+ * {@code getSession(true)} path. Application code that relies on
+ * session-creation listeners will need to add the bridge hook, or use the
+ * Rust {@code SessionBinder} directly.
  *
  * <p>Operating on an invalidated or expired session causes the underlying
  * {@code native} call to throw {@link IllegalStateException}, exactly as the
@@ -36,6 +49,19 @@ public final class TomcatRsHttpSession implements HttpSession {
     public TomcatRsHttpSession(long nativeSessionId, ServletContext servletContext) {
         this.nativeSessionId = nativeSessionId;
         this.servletContext = servletContext;
+    }
+
+    /**
+     * Convenience single-arg constructor: builds a facade with no
+     * {@link ServletContext} attached. Used by the request-facade bridge
+     * path, where the binding only needs the {@code nativeSessionId}; the
+     * {@link #getServletContext()} accessor returns {@code null} on this
+     * path (the Servlet spec permits but discourages a null context, and
+     * the bridge does not currently route servlet-context references back
+     * through the session facade).
+     */
+    public TomcatRsHttpSession(long nativeSessionId) {
+        this(nativeSessionId, null);
     }
 
     /** Exposes the opaque id (e.g. for the request-facade {@code getSession} bridge). */

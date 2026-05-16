@@ -1665,11 +1665,14 @@ mod imp {
         // used by other call sites that pattern-match registration results.
         let _ = JValue::Void;
 
+        // The session-resolution natives are declared on `NativeRequest`
+        // (alongside `nativeGetHeader` et al.) — the bridge keeps the
+        // per-request surface in one Java class — so they merge into the same
+        // RegisterNatives call as the rest of the request bindings.
+        let mut request_all = request_bindings();
+        request_all.extend(crate::session_bridge::request_session_bindings());
         let groups: [(&str, Vec<NativeBinding>); 5] = [
-            (
-                "org/apache/tomcatrs/bridge/NativeRequest",
-                request_bindings(),
-            ),
+            ("org/apache/tomcatrs/bridge/NativeRequest", request_all),
             (
                 "org/apache/tomcatrs/bridge/NativeResponse",
                 response_bindings(),

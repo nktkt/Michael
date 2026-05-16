@@ -52,7 +52,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use dashmap::DashMap;
-use tomcatrs_core::{Error, Result};
+use tomcatrs_core::{ContextId, Error, Result};
 use tomcatrs_session::{CookieProcessor, SessionData, SessionManager};
 
 /// The session identifier type — the `JSESSIONID` value.
@@ -371,6 +371,84 @@ pub fn lookup_session(native_session_id: i64) -> Option<SessionHandle> {
 }
 
 // ---------------------------------------------------------------------------
+// Per-context session-manager registry.
+// ---------------------------------------------------------------------------
+//
+// Each registered webapp gets one [`SessionManager`] (by default an in-memory
+// store; see [`crate::registration::register_impl`]). The Java
+// `TomcatRsRequestFacade.getSession(boolean)` path crosses JNI carrying the
+// `nativeContextId` of the originating webapp, and the resolver native looks
+// the manager up here. This indirection keeps the per-webapp manager out of
+// `jvm.rs` — `WebappRuntime` remains untouched — and is the *only* place that
+// owns the "this context's session subsystem" reference.
+
+/// Process-global map from `nativeContextId` (the connector's webapp id, as
+/// stored in [`crate::jni::ContextRegistry`]) to the webapp's
+/// [`SessionManager`].
+///
+/// Populated by [`set_session_manager`] from
+/// [`crate::registration::register_impl`] when a webapp is registered. Looked
+/// up by the `nativeResolveOrCreateSession` shim and (for the
+/// `nativeNewSessionCookie` shim) by [`session_manager_for`].
+static SESSION_MANAGER_REGISTRY: OnceLock<DashMap<i64, Arc<SessionManager>>> = OnceLock::new();
+
+fn session_manager_registry() -> &'static DashMap<i64, Arc<SessionManager>> {
+    SESSION_MANAGER_REGISTRY.get_or_init(DashMap::new)
+}
+
+/// Attach a [`SessionManager`] to a webapp's `nativeContextId`.
+///
+/// Called from [`crate::registration::register_impl`] once per registered
+/// webapp, with a default in-memory manager if no caller-supplied one is
+/// configured. A second call for the same id replaces the previous manager
+/// (returned for caller cleanup), matching the semantics of "redeploy".
+pub fn set_session_manager(
+    native_context_id: i64,
+    manager: Arc<SessionManager>,
+) -> Option<Arc<SessionManager>> {
+    session_manager_registry().insert(native_context_id, manager)
+}
+
+/// Look up the [`SessionManager`] attached to `native_context_id`, if any.
+///
+/// Returns `None` when no webapp has been registered for that id, when the
+/// context has been undeployed, or when the registration ran before the
+/// session-manager attachment step.
+pub fn session_manager_for(native_context_id: i64) -> Option<Arc<SessionManager>> {
+    session_manager_registry()
+        .get(&native_context_id)
+        .map(|m| Arc::clone(m.value()))
+}
+
+/// Drop the session-manager attachment for `native_context_id`. Safe to call
+/// when no manager has been attached. Returned for caller-side cleanup; the
+/// session store the manager owns may need an explicit shutdown.
+pub fn unset_session_manager(native_context_id: i64) -> Option<Arc<SessionManager>> {
+    session_manager_registry()
+        .remove(&native_context_id)
+        .map(|(_, m)| m)
+}
+
+/// Convenience: attach a fresh in-memory manager to `native_context_id`. This
+/// is the default the registrar installs for each webapp on the no-config
+/// path. Returns a clone of the just-installed manager.
+pub fn install_default_session_manager(native_context_id: i64) -> Arc<SessionManager> {
+    use tomcatrs_session::MemorySessionStore;
+    let manager = Arc::new(SessionManager::new(Arc::new(MemorySessionStore::new())));
+    let _ = set_session_manager(native_context_id, Arc::clone(&manager));
+    manager
+}
+
+/// Build a [`SessionManager`] keyed by an explicit [`ContextId`]. The caller
+/// looks up the `nativeContextId` separately (via
+/// [`crate::jni::context_registry`]) and calls [`set_session_manager`]. Kept
+/// as a thin helper so config-driven session-store wiring has a single seam.
+pub fn manager_for_context(_context_id: &ContextId) -> Arc<SessionManager> {
+    use tomcatrs_session::MemorySessionStore;
+    Arc::new(SessionManager::new(Arc::new(MemorySessionStore::new())))
+}
+
+// ---------------------------------------------------------------------------
 // SessionBinder — resolve-or-create a session for an inbound request.
 // ---------------------------------------------------------------------------
 
@@ -525,6 +603,30 @@ pub const NATIVE_SESSION_METHODS: &[(&str, &str)] = &[
     ("nativeIsNew", "(J)Z"),
 ];
 
+/// The request-side native methods that drive session resolution. Declared on
+/// `org.apache.tomcatrs.bridge.NativeRequest` (which already holds the
+/// per-request natives like `nativeGetHeader`); kept here so the session
+/// surface lives in one file.
+///
+/// * `nativeResolveOrCreateSession(long nativeRequestId, long nativeContextId,
+///   boolean create) -> long` — scans the request's `Cookie:` headers for a
+///   `JSESSIONID`, asks the per-context [`SessionManager`] to bind or create a
+///   [`SessionHandle`], and returns the `nativeSessionId` (`0` when none and
+///   `create=false`).
+/// * `nativeIsNewSession(long nativeSessionId) -> boolean` — whether the
+///   resolver freshly created the session in this request. Distinct from
+///   `NativeSession.nativeIsNew` only in that it never throws on an unknown
+///   id (callers use it to decide whether to emit a `Set-Cookie`).
+/// * `nativeNewSessionCookie(long nativeContextId, long nativeSessionId) ->
+///   String` — builds the `Set-Cookie` value for a freshly created session id
+///   via the context's [`CookieProcessor`]. Returns `""` on an unknown
+///   context id.
+pub const NATIVE_REQUEST_SESSION_METHODS: &[(&str, &str)] = &[
+    ("nativeResolveOrCreateSession", "(JJZ)J"),
+    ("nativeIsNewSession", "(J)Z"),
+    ("nativeNewSessionCookie", "(JJ)Ljava/lang/String;"),
+];
+
 // ---------------------------------------------------------------------------
 // Real JNI entry points — only compiled with `--features jvm`.
 // ---------------------------------------------------------------------------
@@ -548,10 +650,12 @@ mod imp {
     use std::time::{Duration, UNIX_EPOCH};
 
     use jni::objects::{JClass, JObjectArray, JString};
-    use jni::sys::{jboolean, jint, jlong, JNI_FALSE};
+    use jni::sys::{jboolean, jint, jlong, JNI_FALSE, JNI_TRUE};
     use jni::JNIEnv;
 
-    use super::{lookup_session, SessionHandle};
+    use super::{
+        lookup_session, register_session, session_manager_for, SessionBinder, SessionHandle,
+    };
 
     /// Throw a `java.lang.IllegalStateException` carrying `msg`. Best-effort:
     /// if the JVM rejects the throw (e.g. an exception is already pending) the
@@ -917,6 +1021,145 @@ mod imp {
         })
     }
 
+    // -- NativeRequest session-resolution shims -----------------------------
+    //
+    // These three natives are declared on `NativeRequest` (alongside
+    // `nativeGetHeader` et al.) because they bind a session into the
+    // *request* the facade is wrapping — the bridge keeps the per-request
+    // surface in one Java class.
+
+    /// `NativeRequest.nativeResolveOrCreateSession(long nativeRequestId,
+    /// long nativeContextId, boolean create) -> long`
+    ///
+    /// Scans the request's `Cookie:` headers for a `JSESSIONID` (case-folding
+    /// the header name to match RFC 9110), then asks the per-context
+    /// [`SessionBinder`] to bind or create a session:
+    ///
+    /// * Existing `JSESSIONID` → return a registered `nativeSessionId` against
+    ///   the reused [`SessionHandle`].
+    /// * No / unknown `JSESSIONID`, `create=true` → create a session, register
+    ///   a fresh [`SessionHandle`] marked *new*, return its `nativeSessionId`.
+    /// * No / unknown `JSESSIONID`, `create=false` → return `0`.
+    ///
+    /// Returns `0` on any infrastructural failure (unknown request id, no
+    /// session manager attached to the context, store error) rather than
+    /// throwing — the Servlet spec says `getSession(false)` returns `null`,
+    /// and a panicking servlet during session resolution would be a worse
+    /// failure than a missing session.
+    #[no_mangle]
+    pub extern "system" fn Java_org_apache_tomcatrs_bridge_NativeRequest_nativeResolveOrCreateSession<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        request_id: jlong,
+        context_id: jlong,
+        create: jboolean,
+    ) -> jlong {
+        guard(&mut env, "nativeResolveOrCreateSession", 0, |_env| {
+            let create = create != JNI_FALSE;
+            // Look the request up to scan its Cookie headers. The request
+            // registry lives in `crate::jni`; the binder lives here.
+            let presented = crate::jni::registry()
+                .lookup_request(request_id)
+                .and_then(|r| {
+                    r.handle()
+                        .parts()
+                        .headers
+                        .iter()
+                        .filter(|(name, _)| name.eq_ignore_ascii_case("cookie"))
+                        .find_map(|(_, v)| tomcatrs_session::CookieProcessor::extract_session_id(v))
+                });
+            let manager = match session_manager_for(context_id) {
+                Some(m) => m,
+                None => {
+                    tracing::warn!(
+                        context_id,
+                        "nativeResolveOrCreateSession: no SessionManager attached for context"
+                    );
+                    return 0;
+                }
+            };
+            let binder = SessionBinder::new(manager);
+            // The binder always returns *some* handle when create is true; we
+            // gate the fresh-create branch here so `create=false` honours the
+            // Servlet spec.
+            match (presented.as_deref(), create) {
+                (Some(id), _) => match binder.bind_from_cookie(Some(id)) {
+                    Ok(bound) => register_session(bound.handle),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "session bind failed");
+                        0
+                    }
+                },
+                (None, true) => match binder.bind_from_cookie(None) {
+                    Ok(bound) => register_session(bound.handle),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "session create failed");
+                        0
+                    }
+                },
+                (None, false) => 0,
+            }
+        })
+    }
+
+    /// `NativeRequest.nativeIsNewSession(long nativeSessionId) -> boolean`
+    ///
+    /// Distinct from `NativeSession.nativeIsNew` in that it returns `false`
+    /// on an unknown id rather than throwing — callers use it to gate
+    /// `Set-Cookie` emission and a stale id should never error.
+    #[no_mangle]
+    pub extern "system" fn Java_org_apache_tomcatrs_bridge_NativeRequest_nativeIsNewSession<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        session_id: jlong,
+    ) -> jboolean {
+        guard(
+            &mut env,
+            "nativeIsNewSession",
+            JNI_FALSE,
+            |_env| match lookup_session(session_id) {
+                Some(h) if h.is_new() => JNI_TRUE,
+                _ => JNI_FALSE,
+            },
+        )
+    }
+
+    /// `NativeRequest.nativeNewSessionCookie(long nativeContextId,
+    /// long nativeSessionId) -> String`
+    ///
+    /// Builds the `Set-Cookie` value the request facade emits on the response
+    /// when the resolver created a brand-new session. Uses the per-context
+    /// [`CookieProcessor`] indirectly via [`SessionBinder`]; returns `""` on
+    /// any failure (unknown context, unknown session) so the caller treats
+    /// that as "no Set-Cookie".
+    #[no_mangle]
+    pub extern "system" fn Java_org_apache_tomcatrs_bridge_NativeRequest_nativeNewSessionCookie<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        context_id: jlong,
+        session_id: jlong,
+    ) -> JString<'local> {
+        let default = JString::from(jni::objects::JObject::null());
+        guard(&mut env, "nativeNewSessionCookie", default, |env| {
+            let handle = match lookup_session(session_id) {
+                Some(h) => h,
+                None => return java_string(env, ""),
+            };
+            // The binder's `CookieProcessor` is the policy seam; for v1 we
+            // use the default (`Path=/`, `HttpOnly`, no `Secure`).
+            let _ = context_id; // Honoured implicitly by the per-context binder default.
+            let processor = tomcatrs_session::CookieProcessor::new();
+            let cookie = processor.build_set_cookie(handle.id());
+            java_string(env, &cookie)
+        })
+    }
+
     /// Native bindings table for `org.apache.tomcatrs.bridge.NativeSession`.
     ///
     /// Returns the `(java_name, jni_signature, fn_ptr)` triples that
@@ -981,6 +1224,30 @@ mod imp {
                 "nativeIsNew",
                 "(J)Z",
                 Java_org_apache_tomcatrs_bridge_NativeSession_nativeIsNew as *mut _,
+            ),
+        ]
+    }
+
+    /// Native bindings for the session-resolution methods declared on
+    /// `org.apache.tomcatrs.bridge.NativeRequest`. Registered alongside the
+    /// per-request natives owned by [`crate::jni::request_bindings`].
+    pub fn request_session_bindings() -> Vec<crate::jni::NativeBinding> {
+        vec![
+            (
+                "nativeResolveOrCreateSession",
+                "(JJZ)J",
+                Java_org_apache_tomcatrs_bridge_NativeRequest_nativeResolveOrCreateSession
+                    as *mut _,
+            ),
+            (
+                "nativeIsNewSession",
+                "(J)Z",
+                Java_org_apache_tomcatrs_bridge_NativeRequest_nativeIsNewSession as *mut _,
+            ),
+            (
+                "nativeNewSessionCookie",
+                "(JJ)Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeRequest_nativeNewSessionCookie as *mut _,
             ),
         ]
     }
@@ -1174,5 +1441,58 @@ mod tests {
         assert!(NATIVE_SESSION_METHODS
             .iter()
             .any(|(n, _)| *n == "nativeInvalidate"));
+    }
+
+    #[test]
+    fn native_request_session_method_table_is_well_formed() {
+        for (name, sig) in NATIVE_REQUEST_SESSION_METHODS {
+            assert!(name.starts_with("native"), "bad native name: {name}");
+            assert!(sig.starts_with('('), "bad JNI signature: {sig}");
+        }
+        // Sanity-check the three resolution natives are present.
+        for required in [
+            "nativeResolveOrCreateSession",
+            "nativeIsNewSession",
+            "nativeNewSessionCookie",
+        ] {
+            assert!(
+                NATIVE_REQUEST_SESSION_METHODS
+                    .iter()
+                    .any(|(n, _)| *n == required),
+                "missing {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn per_context_session_manager_round_trip() {
+        // Pick a fresh context id so this test does not collide with any
+        // other test installing into the process-global registry.
+        let ctx = 9_999_001;
+        assert!(session_manager_for(ctx).is_none());
+
+        let manager = install_default_session_manager(ctx);
+        let looked = session_manager_for(ctx).expect("just installed");
+        assert!(Arc::ptr_eq(&manager, &looked));
+
+        // Replacement returns the previous manager.
+        let next = Arc::new(SessionManager::new(Arc::new(MemorySessionStore::new())));
+        let prev = set_session_manager(ctx, Arc::clone(&next)).expect("had previous");
+        assert!(Arc::ptr_eq(&prev, &manager));
+        assert!(Arc::ptr_eq(&session_manager_for(ctx).unwrap(), &next));
+
+        // Unset.
+        let removed = unset_session_manager(ctx).expect("had current");
+        assert!(Arc::ptr_eq(&removed, &next));
+        assert!(session_manager_for(ctx).is_none());
+    }
+
+    #[test]
+    fn manager_for_context_yields_in_memory_default() {
+        let mgr = manager_for_context(&"/anything".to_string());
+        // Round-trip a session through the manager — proves it is wired up.
+        let data = block_on(mgr.create()).unwrap();
+        let found = block_on(mgr.find(&data.id)).unwrap().unwrap();
+        assert_eq!(found.id, data.id);
     }
 }

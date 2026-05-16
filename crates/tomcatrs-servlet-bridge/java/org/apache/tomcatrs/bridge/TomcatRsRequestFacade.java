@@ -44,13 +44,82 @@ public final class TomcatRsRequestFacade implements HttpServletRequest {
     /** Per-request character encoding override (Servlet API). */
     private String characterEncoding;
 
+    /**
+     * Lazily-parsed cookie array, materialised on the first call to
+     * {@link #getCookies()}. A non-null sentinel value (possibly an empty
+     * array) signals that parsing has already run for this request, so a
+     * subsequent call cannot pay the cost a second time.
+     *
+     * <p>The Servlet API contract is that {@code getCookies()} returns
+     * {@code null} when the request carried no {@code Cookie} header at all
+     * — see {@link #getCookies()}; the {@link #cookiesParsed} flag
+     * disambiguates "not parsed yet" from "parsed, but the request had no
+     * cookies" when {@link #cookies} is {@code null}.
+     */
+    private jakarta.servlet.http.Cookie[] cookies;
+    private boolean cookiesParsed;
+
+    /**
+     * Opaque handle to the Rust-side webapp context entry, used by the
+     * session-resolution natives to find this webapp's
+     * {@code SessionManager}. {@code 0} means "no context attached" — the
+     * facade still works but {@link #getSession(boolean)} returns
+     * {@code null}.
+     */
+    private final long nativeContextId;
+
+    /**
+     * Opaque handle to the Rust-side response sink for this request, used by
+     * {@link #getSession(boolean)} to emit the
+     * {@code Set-Cookie: JSESSIONID=...} header on a freshly-created session.
+     * {@code 0} means "no response attached" — getSession still resolves a
+     * session but cannot drive the cookie back to the client (the test
+     * harness reads it off the registered handle instead).
+     */
+    private final long nativeResponseId;
+
+    /**
+     * Cached {@code HttpSession} bound to this request — set lazily on the
+     * first {@link #getSession(boolean)} call so the session is resolved at
+     * most once per request, matching the Servlet spec.
+     */
+    private jakarta.servlet.http.HttpSession sessionCache;
+
+    /**
+     * Legacy single-arg constructor: builds a facade without a context or
+     * response handle. Sessions resolve to {@code null} on this path — the
+     * facade is functional for non-session servlet tests and for callers
+     * that have not yet been updated to the 3-arg form.
+     */
     public TomcatRsRequestFacade(long nativeRequestId) {
+        this(nativeRequestId, 0L, 0L);
+    }
+
+    /**
+     * Full constructor: attaches the request to its webapp context (so
+     * session resolution can find the per-context {@code SessionManager})
+     * and to its response handle (so {@code getSession(true)} on a freshly
+     * created session can emit a {@code Set-Cookie} header).
+     */
+    public TomcatRsRequestFacade(long nativeRequestId, long nativeContextId, long nativeResponseId) {
         this.nativeRequestId = nativeRequestId;
+        this.nativeContextId = nativeContextId;
+        this.nativeResponseId = nativeResponseId;
     }
 
     /** Exposes the opaque id (e.g. for the {@code AsyncContext} bridge). */
     public long nativeRequestId() {
         return nativeRequestId;
+    }
+
+    /** Exposes the context id (used by session-resolution wiring). */
+    public long nativeContextId() {
+        return nativeContextId;
+    }
+
+    /** Exposes the response id (used by session-cookie emission). */
+    public long nativeResponseId() {
+        return nativeResponseId;
     }
 
     // --- Lazy metadata accessors: one JNI call each --------------------------
@@ -301,8 +370,157 @@ public final class TomcatRsRequestFacade implements HttpServletRequest {
         return sb;
     }
 
-    /** No cookies surfaced from the bridge yet; an empty array is safe. */
-    public jakarta.servlet.http.Cookie[] getCookies() { return new jakarta.servlet.http.Cookie[0]; }
+    /**
+     * Parse the {@code Cookie:} request header(s) into an array of
+     * {@link jakarta.servlet.http.Cookie} pairs. Lazy: the parse runs at most
+     * once per request; the result is cached in {@link #cookies}.
+     *
+     * <p>Servlet API contract: returns {@code null} when the request carried
+     * no {@code Cookie} header at all (callers — Spring CSRF, session-id
+     * extraction, etc. — special-case the {@code null}-vs-empty distinction).
+     * Returns an empty array if a header was present but every pair in it was
+     * malformed and skipped.
+     *
+     * <p>The bridge currently surfaces only the <em>first</em>
+     * {@code Cookie} header via {@link NativeRequest#nativeGetHeader}; in
+     * practice browsers and HTTP clients concatenate cookies into a single
+     * header value, so this is sufficient for real-world traffic. A
+     * multi-header bridge would require a {@code nativeGetHeaders} shim — see
+     * the documented gap in {@link #getHeaders(String)}.
+     *
+     * <p>Inbound cookies have no attributes by the HTTP spec — {@code Path},
+     * {@code Secure}, {@code HttpOnly}, {@code Domain}, {@code Max-Age} only
+     * travel on outbound {@code Set-Cookie} response headers (RFC 6265 §4.2)
+     * — so the returned cookies expose only {@code name} and {@code value}.
+     */
+    public jakarta.servlet.http.Cookie[] getCookies() {
+        if (!cookiesParsed) {
+            String header = NativeRequest.nativeGetHeader(nativeRequestId, "Cookie");
+            cookies = header == null ? null : parseCookieHeader(header);
+            cookiesParsed = true;
+        }
+        return cookies;
+    }
+
+    /**
+     * Parse a single {@code Cookie:} header value into an array of
+     * {@link jakarta.servlet.http.Cookie} name/value pairs.
+     *
+     * <p>Implementation follows lenient [RFC 6265] §5.4 parsing, matching the
+     * pure-Rust {@code tomcatrs_coyote::cookies::parse_cookie_header} core but
+     * kept Java-side so the bridge facade stays self-contained (one JNI call
+     * per request to fetch the header, then pure-Java parsing — no second
+     * round trip and no Rust-side {@code String[]} marshalling).
+     *
+     * <p>Rules:
+     * <ul>
+     *   <li>Pairs are separated by {@code ;}.</li>
+     *   <li>Surrounding whitespace around each pair, the name, and the value
+     *       is trimmed.</li>
+     *   <li>A value wholly wrapped in double quotes has those quotes stripped
+     *       (RFC 2616 quoted-string).</li>
+     *   <li>RFC 2965 reserved attributes ({@code $Version}, {@code $Path},
+     *       {@code $Domain}) and any other pair whose name starts with
+     *       {@code $} are silently dropped — those are leftover request-cookie
+     *       metadata, not application cookies.</li>
+     *   <li>Pairs without {@code =}, with empty names, or with names that
+     *       contain RFC 2616 separator characters / control characters are
+     *       silently skipped — the parse never throws.</li>
+     * </ul>
+     *
+     * <p>Always returns a non-{@code null} array. Returns
+     * {@code new Cookie[0]} when every pair is malformed.
+     */
+    static jakarta.servlet.http.Cookie[] parseCookieHeader(String headerValue) {
+        if (headerValue == null || headerValue.isEmpty()) {
+            return new jakarta.servlet.http.Cookie[0];
+        }
+        java.util.ArrayList<jakarta.servlet.http.Cookie> out = new java.util.ArrayList<>();
+        int len = headerValue.length();
+        int i = 0;
+        while (i < len) {
+            int semi = headerValue.indexOf(';', i);
+            int end = semi < 0 ? len : semi;
+            // Skip surrounding ASCII whitespace within this pair slice.
+            int start = i;
+            while (start < end && isSpace(headerValue.charAt(start))) {
+                start++;
+            }
+            int stop = end;
+            while (stop > start && isSpace(headerValue.charAt(stop - 1))) {
+                stop--;
+            }
+            if (start < stop) {
+                int eq = headerValue.indexOf('=', start);
+                if (eq >= 0 && eq < stop) {
+                    String name = trimAscii(headerValue, start, eq);
+                    String value = trimAscii(headerValue, eq + 1, stop);
+                    // Strip a single layer of surrounding double quotes.
+                    if (value.length() >= 2
+                            && value.charAt(0) == '"'
+                            && value.charAt(value.length() - 1) == '"') {
+                        value = value.substring(1, value.length() - 1);
+                    }
+                    // Skip RFC 2965 reserved leftovers ($Version, $Path, $Domain).
+                    if (!name.isEmpty() && name.charAt(0) != '$' && isValidCookieName(name)) {
+                        try {
+                            out.add(new jakarta.servlet.http.Cookie(name, value));
+                        } catch (IllegalArgumentException ignore) {
+                            // The real jakarta.servlet.Cookie constructor
+                            // enforces RFC 2109 token rules and throws for
+                            // invalid names; the bridge stub does not, but
+                            // isValidCookieName above guards the common case
+                            // either way. Skip silently per the contract.
+                        }
+                    }
+                }
+            }
+            i = (semi < 0) ? len : semi + 1;
+        }
+        return out.toArray(new jakarta.servlet.http.Cookie[0]);
+    }
+
+    /** ASCII whitespace test — RFC 6265 OWS (`SP` / `HTAB`). */
+    private static boolean isSpace(char c) {
+        return c == ' ' || c == '\t';
+    }
+
+    /** Substring + trim, allocating only the final {@link String}. */
+    private static String trimAscii(String s, int from, int to) {
+        while (from < to && isSpace(s.charAt(from))) {
+            from++;
+        }
+        while (to > from && isSpace(s.charAt(to - 1))) {
+            to--;
+        }
+        return s.substring(from, to);
+    }
+
+    /**
+     * Reject obviously-invalid cookie names so the real
+     * {@code jakarta.servlet.http.Cookie} constructor's RFC 2109 token check
+     * does not throw on a malformed pair. The full RFC 2616 separator set is
+     * checked plus control characters; anything else is allowed (the bridge
+     * stub permits any non-empty name).
+     */
+    private static boolean isValidCookieName(String name) {
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (c <= 0x20 || c >= 0x7F) {
+                return false;
+            }
+            switch (c) {
+                case '(': case ')': case '<': case '>': case '@':
+                case ',': case ';': case ':': case '\\': case '"':
+                case '/': case '[': case ']': case '?': case '=':
+                case '{': case '}':
+                    return false;
+                default:
+                    // valid token char
+            }
+        }
+        return true;
+    }
 
     /** Context path = the webapp's mount point. Best-effort empty default. */
     public String getContextPath() { return ""; }
@@ -362,15 +580,61 @@ public final class TomcatRsRequestFacade implements HttpServletRequest {
     @Deprecated public boolean isRequestedSessionIdFromUrl() { return isRequestedSessionIdFromURL(); }
 
     /**
-     * Sessions are not wired to the Rust SessionManager from this facade
-     * yet. Return {@code null} when {@code create=false} per the spec;
-     * for {@code create=true} log and return {@code null} as well so
-     * frameworks discover the absence at the first dereference rather than
-     * at use time (no AbstractMethodError, no half-built session).
+     * Resolve (or create) the {@code HttpSession} bound to this request.
+     *
+     * <p>End-to-end flow:
+     * <ol>
+     *   <li>If a session has already been resolved for this request, return
+     *       the cached one — the Servlet spec guarantees at most one
+     *       resolution per request.</li>
+     *   <li>Otherwise, ask
+     *       {@link NativeRequest#nativeResolveOrCreateSession} to scan the
+     *       request's {@code Cookie:} headers for {@code JSESSIONID} and
+     *       resolve / create through the per-context
+     *       {@code SessionManager}.</li>
+     *   <li>If the resolver freshly created the session (i.e.
+     *       {@link NativeRequest#nativeIsNewSession} returns {@code true}),
+     *       emit a {@code Set-Cookie: JSESSIONID=...} header on the response
+     *       so the client adopts the cookie. Requires
+     *       {@link #nativeResponseId} {@code != 0}; the legacy single-arg
+     *       constructor leaves it as {@code 0}, which the bridge accepts
+     *       but logs the cookie-drop on the Rust side.</li>
+     * </ol>
+     *
+     * <p><strong>Honest gap (v1):</strong> session attribute values are
+     * String-typed end-to-end. {@link TomcatRsHttpSession#setAttribute}
+     * stringifies its argument; framework code that stores typed objects
+     * (Spring Security's {@code SecurityContext}, etc.) will get a
+     * {@code String} when reading back. The Java side
+     * {@code TomcatRsHttpSession} doc-comment notes this; future releases
+     * will introduce a typed attribute value across the JNI boundary.
+     *
+     * <p><strong>Honest gap (v1):</strong>
+     * {@code HttpSessionListener.sessionCreated} is not driven from this
+     * facade; webapps relying on session-creation listeners will not have
+     * those listeners called.
      */
     public jakarta.servlet.http.HttpSession getSession(boolean create) {
-        // TODO: bridge to tomcatrs_session::SessionManager via a native fn.
-        return null;
+        if (sessionCache != null) {
+            return sessionCache;
+        }
+        long sid = NativeRequest.nativeResolveOrCreateSession(
+                nativeRequestId, nativeContextId, create);
+        if (sid == 0L) {
+            return null;
+        }
+        // If the resolver freshly created the session, ensure the client
+        // adopts the cookie via a single Set-Cookie header on the response.
+        if (nativeResponseId != 0L && NativeRequest.nativeIsNewSession(sid)) {
+            String cookieValue = NativeRequest.nativeNewSessionCookie(
+                    nativeContextId, sid);
+            if (cookieValue != null && !cookieValue.isEmpty()) {
+                NativeResponse.nativeAddHeader(
+                        nativeResponseId, "Set-Cookie", cookieValue);
+            }
+        }
+        sessionCache = new TomcatRsHttpSession(sid, null);
+        return sessionCache;
     }
 
     public jakarta.servlet.http.HttpSession getSession() { return getSession(true); }

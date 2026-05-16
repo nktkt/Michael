@@ -469,6 +469,14 @@ fn register_impl(
     // the Rust servlet registry.
     crate::jni::attach_webapp(native_context_id, Arc::downgrade(&webapp));
 
+    // Attach a default in-memory SessionManager for this webapp so the
+    // Java-side `TomcatRsRequestFacade.getSession()` resolution path has a
+    // store to bind sessions into. Pluggable: callers that want a non-default
+    // store can call `session_bridge::set_session_manager` afterwards. The
+    // helper is idempotent on the registry slot (it replaces any prior
+    // attachment), so re-deploys reset the session state cleanly.
+    crate::session_bridge::install_default_session_manager(native_context_id);
+
     // Everything that touches JNI runs on a single worker thread through the
     // `with_env` funnel. The closure returns the freshly-built handles so they
     // can be stored in the (thread-safe) `WebappRuntime` registries afterwards.
@@ -730,10 +738,16 @@ fn register_impl(
     // Allocate a ContextEntry on the no-JVM path too — the registry is
     // feature-independent so the path → id index it exposes is useful to
     // callers (e.g. tests of the registry plumbing) even without a JVM.
-    let _native_context_id = register_context(build_context_entry(
+    let native_context_id = register_context(build_context_entry(
         &registrar.context_id,
         &registrar.class_loader_config,
     ));
+
+    // Default in-memory SessionManager for this webapp; matches the
+    // jvm-feature path so session-resolution tests written against
+    // `session_bridge::session_manager_for(...)` work identically on both
+    // builds.
+    crate::session_bridge::install_default_session_manager(native_context_id);
 
     tracing::info!(
         context_id = %registrar.context_id,
