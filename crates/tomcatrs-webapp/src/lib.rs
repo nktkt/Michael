@@ -36,10 +36,10 @@ pub mod scanner;
 pub mod war;
 pub mod web_descriptor;
 
-pub use annotations::{AnnotationIndex, WebServletInfo};
+pub use annotations::{AnnotationIndex, ClassMeta, WebServletInfo};
 pub use deployment::{DeploymentKind, DeploymentScanner, DeploymentUnit};
 pub use resources::WebResourceRoot;
-pub use scanner::ClassScanner;
+pub use scanner::{ClassScanner, ClassgraphIndex};
 pub use war::Webapp;
 pub use web_descriptor::WebDescriptor;
 

@@ -65,6 +65,7 @@ use tomcatrs_config::web_xml::{FilterDef, FilterMapping, ServletDef, ServletMapp
 use tomcatrs_core::{ContextId, Result};
 
 use crate::classloader::WebappClassLoaderConfig;
+use crate::jni::{register_context, ContextEntry};
 use crate::jvm::{JvmRuntime, WebappRuntime};
 
 // ===========================================================================
@@ -453,6 +454,21 @@ fn register_impl(
         "registering web application against the embedded JVM"
     );
 
+    // Allocate the Rust-side ContextEntry **before** crossing into JNI so the
+    // by-path index is populated by the time SCI / Spring's onStartup chain
+    // looks it up. The id is stable for the lifetime of the registry entry;
+    // every TomcatRsServletContext / TomcatRsServletConfig / TomcatRsFilterConfig
+    // built below shares it.
+    let native_context_id = register_context(build_context_entry(&context_id, &cl_config));
+
+    // Attach the WebappRuntime to the contextId so the NativeServletContext
+    // `nativeRegisterServlet` shim (called from
+    // TomcatRsServletContext.addServlet on the Java side during SCI /
+    // ServletContextListener startup, e.g. by Spring's DispatcherServlet
+    // registration) can promote the dynamically-registered servlet into
+    // the Rust servlet registry.
+    crate::jni::attach_webapp(native_context_id, Arc::downgrade(&webapp));
+
     // Everything that touches JNI runs on a single worker thread through the
     // `with_env` funnel. The closure returns the freshly-built handles so they
     // can be stored in the (thread-safe) `WebappRuntime` registries afterwards.
@@ -468,11 +484,16 @@ fn register_impl(
             let common = factory.common_loader(env)?;
             let webapp_loader = factory.webapp_loader(env, &cl_config, &common)?;
 
-            // 2. Instantiate + init() each servlet, in the plan's order.
+            // 2. Build the shared TomcatRsServletContext facade once, backed by
+            //    the ContextEntry allocated above.
+            let servlet_ctx = build_servlet_context(env, native_context_id)?;
+
+            // 3. Instantiate + init() each servlet, in the plan's order.
             let mut servlet_handles = Vec::with_capacity(plan.servlets.len());
             for servlet in &plan.servlets {
                 let instance = factory.instantiate(env, &webapp_loader, &servlet.class)?;
-                let config = build_servlet_config(env, &servlet.name, &servlet.init_params)?;
+                let config =
+                    build_servlet_config(env, &servlet.name, &servlet.init_params, &servlet_ctx)?;
                 // Servlet.init(ServletConfig)
                 env.call_method(
                     instance.as_obj(),
@@ -489,11 +510,12 @@ fn register_impl(
                 servlet_handles.push((servlet.name.clone(), ServletInstanceHandle::new(instance)));
             }
 
-            // 3. Instantiate + init() each filter, in declaration order.
+            // 4. Instantiate + init() each filter, in declaration order.
             let mut filter_handles = Vec::with_capacity(plan.filters.len());
             for filter in &plan.filters {
                 let instance = factory.instantiate(env, &webapp_loader, &filter.class)?;
-                let config = build_filter_config(env, &filter.name, &filter.init_params)?;
+                let config =
+                    build_filter_config(env, &filter.name, &filter.init_params, &servlet_ctx)?;
                 // Filter.init(FilterConfig)
                 env.call_method(
                     instance.as_obj(),
@@ -548,48 +570,104 @@ fn register_impl(
     })
 }
 
+/// Build the Rust-side [`ContextEntry`] for a freshly-registered webapp.
+///
+/// Lifted out of `register_impl` so the (pure-data) shape is unit-testable
+/// without a JVM, and so the no-JVM path can construct an entry too (when
+/// that bookkeeping ever becomes useful on the stub).
+fn build_context_entry(
+    context_id: &ContextId,
+    cl_config: &WebappClassLoaderConfig,
+) -> ContextEntry {
+    let mut entry = ContextEntry::minimal(context_id.clone());
+    // The webapp's classes dir doubles as the doc base for v1: resource
+    // look-ups under `/WEB-INF/...` resolve correctly because the exploded
+    // WAR puts `WEB-INF/classes/` as the loader's first classpath entry.
+    // A fuller implementation would carry the WAR's exploded root through
+    // `WebappClassLoaderConfig`; until then this is the most useful
+    // approximation that needs no jvm.rs change.
+    if let Some(classes) = cl_config.classes_dir.as_ref() {
+        // doc_base is conventionally one level *above* WEB-INF/classes —
+        // i.e. the exploded WAR root.
+        let doc_base = classes
+            .parent() // -> .../WEB-INF
+            .and_then(|p| p.parent()) // -> .../<war-root>
+            .map(|p| p.to_path_buf());
+        entry.doc_base = doc_base;
+    }
+    entry
+}
+
+/// Build a `org.apache.tomcatrs.bridge.TomcatRsServletContext(long)` instance
+/// bound to the given Rust-side `nativeContextId`.
+#[cfg(feature = "jvm")]
+fn build_servlet_context<'l>(
+    env: &mut jni::JNIEnv<'l>,
+    native_context_id: i64,
+) -> Result<jni::objects::JObject<'l>> {
+    use jni::objects::JValue;
+    use tomcatrs_core::Error;
+
+    env.new_object(
+        "org/apache/tomcatrs/bridge/TomcatRsServletContext",
+        "(J)V",
+        &[JValue::Long(native_context_id)],
+    )
+    .map_err(|e| {
+        let _ = env.exception_clear();
+        Error::bridge(format!(
+            "new TomcatRsServletContext({native_context_id}) failed: {e}"
+        ))
+    })
+}
+
 /// Build a `org.apache.tomcatrs.bridge.TomcatRsServletConfig` carrying the
-/// servlet's name and `<init-param>` map. The bridge JAR's facade class wraps a
-/// plain `Map<String,String>`; we construct that map here.
+/// servlet's name, `<init-param>` map, and the shared `ServletContext`.
 #[cfg(feature = "jvm")]
 fn build_servlet_config<'l>(
     env: &mut jni::JNIEnv<'l>,
     servlet_name: &str,
     init_params: &HashMap<String, String>,
+    servlet_ctx: &jni::objects::JObject<'l>,
 ) -> Result<jni::objects::JObject<'l>> {
     build_named_config(
         env,
         "org/apache/tomcatrs/bridge/TomcatRsServletConfig",
         servlet_name,
         init_params,
+        servlet_ctx,
     )
 }
 
 /// Build a `org.apache.tomcatrs.bridge.TomcatRsFilterConfig` carrying the
-/// filter's name and `<init-param>` map.
+/// filter's name, `<init-param>` map, and the shared `ServletContext`.
 #[cfg(feature = "jvm")]
 fn build_filter_config<'l>(
     env: &mut jni::JNIEnv<'l>,
     filter_name: &str,
     init_params: &HashMap<String, String>,
+    servlet_ctx: &jni::objects::JObject<'l>,
 ) -> Result<jni::objects::JObject<'l>> {
     build_named_config(
         env,
         "org/apache/tomcatrs/bridge/TomcatRsFilterConfig",
         filter_name,
         init_params,
+        servlet_ctx,
     )
 }
 
-/// Shared helper: build a bridge config object of `class_name` from a `(name,
-/// Map<String,String>)` pair. Both `TomcatRsServletConfig` and
-/// `TomcatRsFilterConfig` expose the same `(String, java.util.Map)` constructor.
+/// Shared helper: build a bridge config object of `class_name` from a
+/// `(name, Map<String,String>, ServletContext)` triple via the
+/// `TomcatRs*Config(String, Map, ServletContext)` constructor both
+/// `TomcatRsServletConfig` and `TomcatRsFilterConfig` expose.
 #[cfg(feature = "jvm")]
 fn build_named_config<'l>(
     env: &mut jni::JNIEnv<'l>,
     class_name: &str,
     name: &str,
     init_params: &HashMap<String, String>,
+    servlet_ctx: &jni::objects::JObject<'l>,
 ) -> Result<jni::objects::JObject<'l>> {
     use jni::objects::{JObject, JValue};
     use tomcatrs_core::Error;
@@ -622,10 +700,19 @@ fn build_named_config<'l>(
         .map_err(|e| Error::bridge(format!("new_string(config name) failed: {e}")))?;
     env.new_object(
         class_name,
-        "(Ljava/lang/String;Ljava/util/Map;)V",
-        &[JValue::Object(&JObject::from(jname)), JValue::Object(&map)],
+        "(Ljava/lang/String;Ljava/util/Map;Ljakarta/servlet/ServletContext;)V",
+        &[
+            JValue::Object(&JObject::from(jname)),
+            JValue::Object(&map),
+            JValue::Object(servlet_ctx),
+        ],
     )
-    .map_err(|e| Error::bridge(format!("new {class_name}(String, Map) failed: {e}")))
+    .map_err(|e| {
+        let _ = env.exception_clear();
+        Error::bridge(format!(
+            "new {class_name}(String, Map, ServletContext) failed: {e}"
+        ))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -639,6 +726,14 @@ fn register_impl(
     use crate::jvm::ServletInstanceHandle;
 
     let plan = &registrar.plan;
+
+    // Allocate a ContextEntry on the no-JVM path too — the registry is
+    // feature-independent so the path → id index it exposes is useful to
+    // callers (e.g. tests of the registry plumbing) even without a JVM.
+    let _native_context_id = register_context(build_context_entry(
+        &registrar.context_id,
+        &registrar.class_loader_config,
+    ));
 
     tracing::info!(
         context_id = %registrar.context_id,

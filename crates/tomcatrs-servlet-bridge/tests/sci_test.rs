@@ -238,7 +238,7 @@ async fn jvm_bridge_runs_servlet_container_initializers() {
     );
 
     // 5. Drive SCI discovery + invocation.
-    let report = run_sci(&runtime, &context_id)
+    let report = run_sci(&runtime, &context_id, &fixture_root)
         .await
         .expect("run_sci must not return an infrastructural error");
 
@@ -277,5 +277,228 @@ async fn jvm_bridge_runs_servlet_container_initializers() {
     // Clean up the marker; harmless on failure.
     let _ = std::fs::remove_file(&marker);
 
+    runtime.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// @HandlesTypes scan — the second integration test.
+//
+// Drives the `handlestypes-fixture` real-WAR fixture:
+//
+//   tests/fixtures/real-wars/handlestypes-fixture/
+//     WEB-INF/src/com/example/htfx/
+//       Marker.java          interface
+//       AlphaImpl.java       implements Marker
+//       BetaImpl.java        implements Marker
+//       HandlesTypesSci.java @HandlesTypes(Marker.class) SCI
+//
+// After registering the webapp, run_sci should:
+//   1. discover HandlesTypesSci via META-INF/services;
+//   2. read its @HandlesTypes annotation, finding `com.example.htfx.Marker`;
+//   3. scan WEB-INF/classes for every class extending/implementing it,
+//      finding AlphaImpl + BetaImpl;
+//   4. load both classes through the webapp loader and pass them into
+//      onStartup as the handled-types `Set<Class<?>>`.
+//
+// The SCI writes the names it received to a marker file; the test reads
+// the file back and asserts both implementors are present. Spring is
+// NOT involved — this proves the @HandlesTypes machinery in isolation.
+// ---------------------------------------------------------------------------
+
+fn handlestypes_fixture_root(root: &Path) -> PathBuf {
+    root.join("tests")
+        .join("fixtures")
+        .join("real-wars")
+        .join("handlestypes-fixture")
+}
+
+fn handlestypes_sci_class_file(root: &Path) -> PathBuf {
+    handlestypes_fixture_root(root)
+        .join("WEB-INF")
+        .join("classes")
+        .join("com")
+        .join("example")
+        .join("htfx")
+        .join("HandlesTypesSci.class")
+}
+
+fn ensure_handlestypes_classes(root: &Path) -> Result<bool, String> {
+    let class = handlestypes_sci_class_file(root);
+    if class.is_file() {
+        return Ok(true);
+    }
+    let script = build_script(root);
+    if !script.is_file() {
+        eprintln!(
+            "[sci_test/@HandlesTypes] skipping: {} missing and build script {} not found",
+            class.display(),
+            script.display()
+        );
+        return Ok(false);
+    }
+    match Command::new("javac").arg("-version").output() {
+        Ok(out) if out.status.success() => {}
+        Ok(_) | Err(_) => {
+            eprintln!("[sci_test/@HandlesTypes] skipping: `javac` not runnable");
+            return Ok(false);
+        }
+    }
+    let status = Command::new("bash")
+        .arg(&script)
+        .current_dir(root)
+        .status()
+        .map_err(|e| format!("failed to spawn {}: {e}", script.display()))?;
+    if !status.success() {
+        return Err(format!("{} exited with {}", script.display(), status));
+    }
+    if class.is_file() {
+        Ok(true)
+    } else {
+        Err(format!(
+            "build.sh succeeded but {} still missing",
+            class.display()
+        ))
+    }
+}
+
+fn install_handlestypes_service_file(fixture_root: &Path) -> Result<(), String> {
+    let services_dir = fixture_root
+        .join("WEB-INF")
+        .join("classes")
+        .join("META-INF")
+        .join("services");
+    std::fs::create_dir_all(&services_dir)
+        .map_err(|e| format!("cannot create {}: {e}", services_dir.display()))?;
+    let service_file = services_dir.join("jakarta.servlet.ServletContainerInitializer");
+    std::fs::write(&service_file, "com.example.htfx.HandlesTypesSci\n")
+        .map_err(|e| format!("cannot write {}: {e}", service_file.display()))
+}
+
+fn fresh_handlestypes_marker_path() -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    std::env::temp_dir().join(format!("tomcatrs-handlestypes-marker-{pid}-{nanos}.txt"))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn jvm_bridge_populates_handles_types_set_for_sci() {
+    let root = workspace_root();
+
+    // 1. Materialise the fixture's class files.
+    match ensure_handlestypes_classes(&root) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(e) => {
+            eprintln!("[sci_test/@HandlesTypes] skipping: build failed: {e}");
+            return;
+        }
+    }
+
+    let fixture_root = handlestypes_fixture_root(&root);
+    let classes_dir = fixture_root.join("WEB-INF").join("classes");
+
+    // 2. Install the META-INF/services descriptor.
+    if let Err(e) = install_handlestypes_service_file(&fixture_root) {
+        eprintln!("[sci_test/@HandlesTypes] skipping: cannot install service descriptor: {e}");
+        return;
+    }
+
+    // 3. Pick a fresh marker path.
+    let marker = fresh_handlestypes_marker_path();
+    let _ = std::fs::remove_file(&marker);
+
+    let cfg = JvmConfig {
+        jvm_args: vec![format!(
+            "-Dtomcatrs.handlestypes.marker={}",
+            marker.display()
+        )],
+        ..JvmConfig::default()
+    };
+
+    let runtime = match JvmRuntime::start(cfg) {
+        Ok(r) => Arc::new(r),
+        Err(e) => {
+            eprintln!("[sci_test/@HandlesTypes] skipping: JvmRuntime::start failed: {e}");
+            return;
+        }
+    };
+
+    // 4. Register the webapp.
+    let context_id: tomcatrs_core::ContextId = "/handlestypes".to_string();
+    let cl_config = WebappClassLoaderConfig::new(
+        context_id.clone(),
+        Some(classes_dir.clone()),
+        Vec::new(),
+        false,
+    );
+
+    let _webapp = runtime
+        .register_webapp(context_id.clone(), cl_config.search_path())
+        .expect("register_webapp should succeed once JvmRuntime has booted");
+
+    let web_xml = WebXml::default();
+    let registrar = WebappRegistrar::new(
+        Arc::clone(&runtime),
+        context_id.clone(),
+        cl_config,
+        &web_xml,
+    );
+    let summary = registrar
+        .register()
+        .unwrap_or_else(|e| panic!("WebappRegistrar::register failed: {e}"));
+    assert!(summary.class_loader_built);
+
+    // 5. Drive SCI discovery + invocation — this is the path under
+    //    test.
+    let report = run_sci(&runtime, &context_id, &fixture_root)
+        .await
+        .expect("run_sci must not return an infrastructural error");
+
+    assert!(
+        !report.has_errors(),
+        "@HandlesTypes SCI must run without errors; got: {:?}",
+        report.errors
+    );
+    assert_eq!(
+        report.initializers,
+        vec!["com.example.htfx.HandlesTypesSci".to_string()],
+        "exactly one SCI must have run"
+    );
+
+    // 6. The SCI wrote a marker file listing the FQCNs it received.
+    let body = std::fs::read_to_string(&marker).unwrap_or_else(|e| {
+        panic!(
+            "marker file {} not produced by HandlesTypesSci.onStartup: {e}",
+            marker.display()
+        )
+    });
+    assert!(
+        body.contains("context=/handlestypes"),
+        "marker must record the context path; got: {body:?}"
+    );
+    assert!(
+        body.contains("handledTypes=2"),
+        "marker must record exactly two handled types; got: {body:?}"
+    );
+    assert!(
+        body.contains("handled: com.example.htfx.AlphaImpl"),
+        "AlphaImpl must be in the handled-types set; got: {body:?}"
+    );
+    assert!(
+        body.contains("handled: com.example.htfx.BetaImpl"),
+        "BetaImpl must be in the handled-types set; got: {body:?}"
+    );
+    // The Marker interface itself must NOT be in the handled set per
+    // Servlet 6 §8.2.4 — the target is excluded from its own subtype
+    // closure.
+    assert!(
+        !body.contains("handled: com.example.htfx.Marker\n"),
+        "Marker (the @HandlesTypes target itself) must not be in the set; got: {body:?}"
+    );
+
+    let _ = std::fs::remove_file(&marker);
     runtime.shutdown();
 }

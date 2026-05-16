@@ -385,6 +385,73 @@ mod imp {
     /// degrades to "JAR not on classpath" rather than failing the build.
     pub(super) const BRIDGE_JAR_PATH: Option<&'static str> = option_env!("TOMCATRS_BRIDGE_JAR");
 
+    /// Locate a real Jakarta Servlet API jar so frameworks like Spring Boot
+    /// — which reflectively walk the full `jakarta.servlet.*` surface —
+    /// have something more substantial than the bridge's compile stubs.
+    ///
+    /// Priority:
+    /// 1. `TOMCATRS_JAKARTA_SERVLET_API_JAR` (explicit operator override).
+    /// 2. `~/.m2/repository/jakarta/servlet/jakarta.servlet-api/<ver>/jakarta.servlet-api-<ver>.jar`
+    ///    (Maven coordinate convention).
+    /// 3. `~/.m2/repository/org/apache/tomcat/embed/tomcat-embed-core/<ver>/tomcat-embed-core-<ver>.jar`
+    ///    (Tomcat embed core *contains* the Jakarta Servlet API classes).
+    ///
+    /// Returns the newest discovered jar (sorted by version-ish name) or
+    /// `None` if nothing was found. Silent — the caller logs.
+    fn locate_real_servlet_api() -> Option<PathBuf> {
+        if let Ok(p) = std::env::var("TOMCATRS_JAKARTA_SERVLET_API_JAR") {
+            let path = PathBuf::from(p);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+        // Try the local Maven cache via `dirs`-style ~/.m2/repository.
+        let home = std::env::var_os("HOME").map(PathBuf::from)?;
+        let candidates = [
+            home.join(".m2/repository/jakarta/servlet/jakarta.servlet-api"),
+            home.join(".m2/repository/org/apache/tomcat/embed/tomcat-embed-core"),
+        ];
+        let mut found: Vec<PathBuf> = Vec::new();
+        for base in &candidates {
+            let Ok(entries) = std::fs::read_dir(base) else {
+                continue;
+            };
+            for ver_dir in entries.flatten().filter(|e| e.path().is_dir()) {
+                let dir = ver_dir.path();
+                let Ok(jars) = std::fs::read_dir(&dir) else {
+                    continue;
+                };
+                for jar in jars.flatten() {
+                    let p = jar.path();
+                    if !p.is_file() {
+                        continue;
+                    }
+                    let name = match p.file_name().and_then(|s| s.to_str()) {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    // Skip -sources, -javadoc, -tests etc.
+                    if name.contains("-sources")
+                        || name.contains("-javadoc")
+                        || name.contains("-tests")
+                    {
+                        continue;
+                    }
+                    if name.ends_with(".jar")
+                        && (name.starts_with("jakarta.servlet-api-")
+                            || name.starts_with("tomcat-embed-core-"))
+                    {
+                        found.push(p);
+                    }
+                }
+            }
+        }
+        // Lexicographic sort approximates "newest version last" for both
+        // `tomcat-embed-core-11.0.21.jar` and `jakarta.servlet-api-6.1.0.jar`.
+        found.sort();
+        found.pop()
+    }
+
     impl JvmRuntime {
         /// Create the embedded JVM and attach the worker pool.
         ///
@@ -401,10 +468,43 @@ mod imp {
         /// missing from the classpath — the runtime is shut down and an
         /// `Error::Bridge` is returned so the caller fails fast.
         pub fn start(cfg: JvmConfig) -> Result<JvmRuntime> {
-            // Compose the effective classpath: caller's entries + the bridge
-            // JAR `build.rs` produced (if any). The bridge JAR is *appended*
-            // so caller entries that shadow it (rare, but possible) win.
+            // Compose the effective classpath. Layering matters for Spring
+            // Boot etc.: the **real** Jakarta Servlet API (if available)
+            // must come BEFORE the bridge JAR so its full classes shadow
+            // the minimal stubs the bridge ships with.
+            //
+            // The real jar is sourced from (in priority order):
+            //   1. `TOMCATRS_JAKARTA_SERVLET_API_JAR` environment variable
+            //      (operator override)
+            //   2. Auto-discovery: a `~/.m2/repository/.../tomcat-embed-
+            //      core-*.jar` or a `jakarta.servlet-api-*.jar` already
+            //      sitting in the developer's local Maven cache. This
+            //      makes the developer experience just-work when a JDK
+            //      build of any Tomcat-shipping project is on the machine.
+            //
+            // The bridge JAR is then appended so stubs cover anything the
+            // real jar doesn't supply, and caller `JvmConfig::classpath`
+            // entries (e.g. the webapp's `WEB-INF/classes` / lib jars)
+            // take precedence over both.
             let mut effective_cfg = cfg.clone();
+
+            if let Some(real_jar) = locate_real_servlet_api() {
+                tracing::info!(
+                    path = %real_jar.display(),
+                    "tomcatrs-servlet-bridge: layering real Jakarta Servlet API \
+                     jar onto the JVM classpath ahead of the bridge stubs"
+                );
+                // Insert at the *front* of the classpath so its classes
+                // shadow the bridge stubs.
+                effective_cfg.classpath.insert(0, real_jar);
+            } else {
+                tracing::info!(
+                    "tomcatrs-servlet-bridge: no real Jakarta Servlet API jar found \
+                     (set TOMCATRS_JAKARTA_SERVLET_API_JAR or install a Tomcat-bearing \
+                     Maven dependency). Falling back to the bridge JAR's minimal stubs."
+                );
+            }
+
             match BRIDGE_JAR_PATH {
                 Some(path) if !path.is_empty() => {
                     let jar = PathBuf::from(path);

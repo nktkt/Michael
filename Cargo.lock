@@ -1788,6 +1788,7 @@ dependencies = [
  "tomcatrs-core",
  "tomcatrs-coyote",
  "tomcatrs-session",
+ "tomcatrs-webapp",
  "tracing",
 ]
 

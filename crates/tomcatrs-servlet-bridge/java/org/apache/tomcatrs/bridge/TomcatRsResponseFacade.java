@@ -2,6 +2,7 @@ package org.apache.tomcatrs.bridge;
 
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.util.Map;
 
 import jakarta.servlet.ServletOutputStream;
 import jakarta.servlet.WriteListener;
@@ -43,6 +44,7 @@ public final class TomcatRsResponseFacade implements HttpServletResponse {
     @Override
     public void setStatus(int sc) {
         NativeResponse.nativeSetStatus(nativeResponseId, sc);
+        this.statusCode = sc;
     }
 
     @Override
@@ -123,6 +125,71 @@ public final class TomcatRsResponseFacade implements HttpServletResponse {
         }
         flushBuffer();
     }
+
+    // -----------------------------------------------------------------------
+    // Additional HttpServletResponse surface needed when the real Jakarta
+    // Servlet API jar is on the runtime classpath (Spring MVC, security
+    // filters, etc. exercise the full interface). Safe-default
+    // implementations — keep the JVM dispatch happy and let frameworks run
+    // to completion. Real wiring to Rust-side state lands as needed.
+    // -----------------------------------------------------------------------
+
+    /** Tracked locally so {@code getStatus()} returns the same value
+     *  callers set via {@code setStatus()}/{@code sendError()}. */
+    private int statusCode = 200;
+    private String characterEncoding = "UTF-8";
+    private java.util.Locale locale = java.util.Locale.getDefault();
+    private long contentLengthLong = -1L;
+    private int bufferSize = 8192;
+
+    public int getStatus() { return statusCode; }
+    public String getHeader(String name) { return null; }
+    public java.util.Collection<String> getHeaders(String name) { return java.util.Collections.emptyList(); }
+    public java.util.Collection<String> getHeaderNames() { return java.util.Collections.emptyList(); }
+    public boolean containsHeader(String name) { return false; }
+    public void setIntHeader(String name, int value) { setHeader(name, Integer.toString(value)); }
+    public void addIntHeader(String name, int value) { addHeader(name, Integer.toString(value)); }
+    public void setDateHeader(String name, long date) { setHeader(name, Long.toString(date)); }
+    public void addDateHeader(String name, long date) { addHeader(name, Long.toString(date)); }
+    public void addCookie(jakarta.servlet.http.Cookie cookie) {
+        if (cookie == null) return;
+        StringBuilder sb = new StringBuilder();
+        sb.append(cookie.getName()).append('=').append(cookie.getValue() == null ? "" : cookie.getValue());
+        if (cookie.getPath() != null) sb.append("; Path=").append(cookie.getPath());
+        if (cookie.getDomain() != null) sb.append("; Domain=").append(cookie.getDomain());
+        if (cookie.getMaxAge() >= 0) sb.append("; Max-Age=").append(cookie.getMaxAge());
+        if (cookie.getSecure()) sb.append("; Secure");
+        if (cookie.isHttpOnly()) sb.append("; HttpOnly");
+        addHeader("Set-Cookie", sb.toString());
+    }
+    public String encodeURL(String url) { return url; }
+    public String encodeRedirectURL(String url) { return url; }
+    @Deprecated public String encodeUrl(String url) { return encodeURL(url); }
+    @Deprecated public String encodeRedirectUrl(String url) { return encodeRedirectURL(url); }
+    public void sendRedirect(String location) throws IOException { sendRedirect(location, 302, true); }
+    public void sendRedirect(String location, int sc) throws IOException { sendRedirect(location, sc, true); }
+    public void sendRedirect(String location, boolean clearBuffer) throws IOException { sendRedirect(location, 302, clearBuffer); }
+    public void sendRedirect(String location, int sc, boolean clearBuffer) throws IOException {
+        setStatus(sc);
+        setHeader("Location", location == null ? "" : location);
+        flushBuffer();
+    }
+    public String getCharacterEncoding() { return characterEncoding; }
+    public void setCharacterEncoding(String charset) { this.characterEncoding = charset; }
+    public String getContentType() { return getHeader("Content-Type"); }
+    public void setContentLengthLong(long len) {
+        this.contentLengthLong = len;
+        setHeader("Content-Length", Long.toString(len));
+    }
+    public int getBufferSize() { return bufferSize; }
+    public void setBufferSize(int size) { this.bufferSize = size; }
+    public void resetBuffer() { /* best-effort: no buffered body retained */ }
+    public void reset() { resetBuffer(); statusCode = 200; }
+    public java.util.Locale getLocale() { return locale; }
+    public void setLocale(java.util.Locale locale) { if (locale != null) this.locale = locale; }
+    @Deprecated public void setStatus(int sc, String sm) { setStatus(sc); }
+    public Map<String, String> getTrailerFields() { return java.util.Collections.emptyMap(); }
+    public void setTrailerFields(java.util.function.Supplier<Map<String, String>> supplier) {}
 
     /**
      * {@link ServletOutputStream} that forwards every write straight into the

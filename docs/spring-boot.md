@@ -131,32 +131,56 @@ checkout:
    the SCI's own code before it throws on the empty handled-types set
    (see below).
 
+## What `@HandlesTypes` does today
+
+Servlet 6 §8.2.4 requires the container, for each SCI annotated with
+`@HandlesTypes(...)`, to scan the webapp classpath for every class that
+extends, implements, or is annotated by any of the listed types, and
+to pass the resulting `Set<Class<?>>` as the first argument to
+`onStartup`. As of this version, **`@HandlesTypes` scanning is
+implemented end-to-end** by
+[`tomcatrs_servlet_bridge::sci::run_sci`](../crates/tomcatrs-servlet-bridge/src/sci.rs).
+
+The scan is driven by
+[`tomcatrs_webapp::ClassgraphIndex`](../crates/tomcatrs-webapp/src/scanner.rs)
+which parses every `.class` file under `WEB-INF/classes/` and every
+`.class` entry inside every `WEB-INF/lib/*.jar` (using the existing
+hand-rolled `ClassFile` parser — no JVM is involved in the scan
+itself), precomputes a `direct_subtypes` adjacency map, and answers
+`classes_handled_by(target)` by BFS from `target`.
+
+### FQCN format
+
+All class names — both the targets read off `@HandlesTypes` and the
+match results from the index — use the **dotted, fully-qualified
+form** (`com.example.Foo`, `java.lang.Object`). This is what
+`java.lang.Class.getName()` returns and what the Java helper
+`ServletContainerInitializerInvoker.readHandlesTypeNames(sciClass)`
+emits, so names round-trip without translation between the Rust class
+graph and the JVM.
+
+### Spring impact
+
+`SpringServletContainerInitializer` declares
+`@HandlesTypes(WebApplicationInitializer.class)`. With this scanner
+in place, the set passed to Spring's SCI now contains every
+`WebApplicationInitializer` implementor reachable through the
+webapp's classpath — which is exactly the input Spring needs to
+discover `SbApplication`.
+
 ## What currently does NOT work
 
 The integration test detects this and skips with a clear message rather
 than hanging or producing a misleading 500:
 
-1. **`@HandlesTypes` scanning is a no-op (the v1 honest gap).** Per
-   Servlet 6 §8.2.4, an SCI annotated `@HandlesTypes` expects the
-   container to scan the webapp's classpath for classes that
-   extend/implement/are-annotated-with any of the listed types, and to
-   pass that set as the first argument to `onStartup`. Spring's
-   `SpringServletContainerInitializer` declares
-   `@HandlesTypes(WebApplicationInitializer.class)` and uses that set
-   exclusively to find user-supplied initializers — which is how it
-   discovers our `SbApplication`. The bridge currently passes an empty
-   set (see the `TODO(@HandlesTypes)` in
-   `crates/tomcatrs-servlet-bridge/src/sci.rs`). The result is that
-   Spring's SCI exits without registering the DispatcherServlet.
-
-2. **Bridge `ServletContext` facade is partial.** The two SCIs above
+1. **Bridge `ServletContext` facade is partial.** The two SCIs above
    throw `Java exception was thrown` because the `TomcatRsServletContext`
    does not yet implement every Servlet 6 method either SCI calls (e.g.
-   `addServlet`, `getResourcePaths`, `getInitParameterNames`). Filling
-   in the facade is independent of `@HandlesTypes`; either gap is
-   sufficient to block Spring's SCI on its own.
+   `addServlet`, `getResourcePaths`, `getInitParameterNames`). With
+   `@HandlesTypes` now flowing the right set into Spring's
+   `onStartup`, this facade gap is the remaining wall.
 
-3. **`web.xml`-less deployment ordering.** A Spring Boot WAR ships no
+2. **`web.xml`-less deployment ordering.** A Spring Boot WAR ships no
    `web.xml`. The container is expected to load it anyway and let SCIs
    register every servlet. The bridge's `WebappRegistrar::register`
    accepts an empty `WebXml` correctly today, but the registration
@@ -173,7 +197,7 @@ Two concrete pieces of work flip this test from "skip after SCI" to
 |------|----------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------|
 | 1    | Complete the `TomcatRsServletContext` facade — at minimum, `addServlet`, `addServletMapping`, `addFilter`, `getResourcePaths`. | `crates/tomcatrs-servlet-bridge/java/org/apache/tomcatrs/bridge/`  |
 | 2    | Wire `addServlet` to insert a `ServletInstanceHandle` into `WebappRuntime`'s registry, so `JvmServletInvoker` can find it.       | `crates/tomcatrs-servlet-bridge/src/jni.rs` + `registration.rs`     |
-| 3    | Implement `@HandlesTypes` classpath scanning in `run_sci`: read the annotation, walk every `WEB-INF/classes/**/*.class` and `WEB-INF/lib/*.jar` entry, decide membership, pass the populated `Set<Class<?>>`. | `crates/tomcatrs-servlet-bridge/src/sci.rs` (`TODO(@HandlesTypes)`) |
+| ~~3~~ | ~~Implement `@HandlesTypes` classpath scanning in `run_sci`~~. **Done** — see [`sci.rs`](../crates/tomcatrs-servlet-bridge/src/sci.rs) and [`scanner.rs`](../crates/tomcatrs-webapp/src/scanner.rs) (`ClassgraphIndex`). | `crates/tomcatrs-servlet-bridge/src/sci.rs`, `crates/tomcatrs-webapp/src/scanner.rs` |
 
 Once those land, the integration test's dispatch step (already written,
 currently behind a runtime skip) will start asserting:

@@ -317,7 +317,7 @@ async fn spring_boot_war_serves_hello_endpoint() {
     //    `SpringServletContainerInitializer`, and invoke its
     //    `onStartup(Set<Class<?>>, ServletContext)` with the set of
     //    `WebApplicationInitializer` implementations.
-    let sci_report = run_sci(&runtime, &context_id)
+    let sci_report = run_sci(&runtime, &context_id, &exploded)
         .await
         .expect("run_sci must not return an infrastructural error");
 

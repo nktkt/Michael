@@ -76,6 +76,32 @@ pub struct WebListenerInfo {
     pub class_name: String,
 }
 
+/// Compact, classpath-graph-friendly view of a parsed Java class.
+///
+/// Carries the four facts the Servlet 6 `@HandlesTypes` rule needs:
+/// the class's own name, the name of its direct superclass (if any),
+/// the names of every interface it directly implements (or, for an
+/// interface, directly extends), and the names of every class-level
+/// annotation on it.
+///
+/// All names use the dotted, fully-qualified form — `com.example.Foo`,
+/// `java.lang.Object` — matching `java.lang.Class.getName()` and the
+/// existing [`ClassFile::class_name`] convention. This is the FQCN
+/// format the [`crate::scanner::ClassgraphIndex`] queries against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassMeta {
+    /// Dotted FQCN of this class, e.g. `com.example.Foo`.
+    pub name: String,
+    /// Dotted FQCN of this class's direct superclass, e.g.
+    /// `java.lang.Object`. `None` for `java.lang.Object` itself.
+    pub super_name: Option<String>,
+    /// Dotted FQCNs of every interface this class directly implements
+    /// (for an interface, directly extends).
+    pub interfaces: Vec<String>,
+    /// Dotted FQCNs of every class-level annotation on this class.
+    pub annotations: Vec<String>,
+}
+
 /// The aggregate result of scanning a web application's classpath for
 /// Servlet-spec annotations.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -235,6 +261,12 @@ pub struct ClassFile {
     pub minor_version: u16,
     /// The dotted, fully-qualified name of this class (e.g. `com.example.Foo`).
     pub class_name: String,
+    /// The dotted, fully-qualified name of this class's direct superclass
+    /// (e.g. `java.lang.Object`), or `None` for `java.lang.Object` itself.
+    pub super_name: Option<String>,
+    /// The dotted, fully-qualified names of every interface this class
+    /// directly implements (or, for an interface, directly extends).
+    pub interface_names: Vec<String>,
     /// The decoded constant pool, indexed from 1 (slot 0 is a placeholder).
     ///
     /// Retained on the parsed `ClassFile` for inspection and testing; the
@@ -369,10 +401,13 @@ impl ClassFile {
 
         let _access_flags = c.u16()?;
         let this_class = c.u16()?;
-        let _super_class = c.u16()?;
+        let super_class = c.u16()?;
 
         let interfaces_count = c.u16()?;
-        c.skip(interfaces_count as usize * 2)?;
+        let mut interface_indices = Vec::with_capacity(interfaces_count as usize);
+        for _ in 0..interfaces_count {
+            interface_indices.push(c.u16()?);
+        }
 
         skip_member_table(&mut c, &constant_pool)?; // fields
         skip_member_table(&mut c, &constant_pool)?; // methods
@@ -380,11 +415,23 @@ impl ClassFile {
         let annotations = parse_class_attributes(&mut c, &constant_pool)?;
 
         let class_name = resolve_class_name(&constant_pool, this_class)?;
+        // `super_class` is 0 only for `java.lang.Object` (and module-info).
+        let super_name = if super_class == 0 {
+            None
+        } else {
+            Some(resolve_class_name(&constant_pool, super_class)?)
+        };
+        let mut interface_names = Vec::with_capacity(interface_indices.len());
+        for idx in interface_indices {
+            interface_names.push(resolve_class_name(&constant_pool, idx)?);
+        }
 
         Ok(ClassFile {
             major_version,
             minor_version,
             class_name,
+            super_name,
+            interface_names,
             constant_pool,
             annotations,
         })
@@ -493,6 +540,37 @@ impl ClassFile {
         info
     }
 
+    /// The dotted, fully-qualified type names of every class-level
+    /// annotation on this class.
+    ///
+    /// Annotation descriptors in a `.class` file are JVM field descriptors of
+    /// the form `Lcom/example/MyAnnotation;`; this strips the leading `L`
+    /// and trailing `;` and converts the slashes to dots, yielding the same
+    /// dotted FQCN form used by [`ClassFile::class_name`]. Descriptors that
+    /// do not match the expected shape are skipped.
+    pub fn annotation_type_names(&self) -> Vec<String> {
+        self.annotations
+            .iter()
+            .filter_map(|a| descriptor_to_fqcn(&a.descriptor))
+            .collect()
+    }
+
+    /// Project this class into the compact [`ClassMeta`] used by
+    /// [`crate::scanner::ClassgraphIndex`] for `@HandlesTypes`-style
+    /// supertype / interface / annotation lookups.
+    ///
+    /// All names are in the dotted FQCN form (e.g. `com.example.Foo`,
+    /// `java.lang.Object`), matching what `java.lang.Class.getName()`
+    /// returns at run time.
+    pub fn meta(&self) -> ClassMeta {
+        ClassMeta {
+            name: self.class_name.clone(),
+            super_name: self.super_name.clone(),
+            interfaces: self.interface_names.clone(),
+            annotations: self.annotation_type_names(),
+        }
+    }
+
     /// Decode an `initParams` element — an array of `@WebInitParam` nested
     /// annotations — into `(name, value)` pairs.
     fn decode_init_params(&self, ev: &ElementValue) -> Vec<InitParam> {
@@ -520,6 +598,18 @@ impl ClassFile {
 /// Whether `descriptor` matches any descriptor in `set`.
 fn is_descriptor(descriptor: &str, set: &[&str]) -> bool {
     set.contains(&descriptor)
+}
+
+/// Convert a JVM class field descriptor (`Lcom/example/Foo;`) to the dotted
+/// FQCN form (`com.example.Foo`). Returns `None` for descriptors that do not
+/// match the expected `L…;` shape (primitives, arrays, malformed input).
+fn descriptor_to_fqcn(descriptor: &str) -> Option<String> {
+    let bytes = descriptor.as_bytes();
+    if bytes.len() < 3 || bytes[0] != b'L' || bytes[bytes.len() - 1] != b';' {
+        return None;
+    }
+    let internal = &descriptor[1..descriptor.len() - 1];
+    Some(internal.replace('/', "."))
 }
 
 /// Extract every string from a (possibly array, possibly scalar)
@@ -1064,29 +1154,58 @@ pub(crate) mod test_builder {
         annotation_descriptor: &str,
         elements: &[(&'static str, Val)],
     ) -> Vec<u8> {
+        build_class_with_hierarchy(
+            internal_name,
+            "java/lang/Object",
+            &[],
+            &[(annotation_descriptor, elements)],
+        )
+    }
+
+    /// Build a `.class` file with an explicit superclass and interface list
+    /// plus zero or more class-level annotations.
+    ///
+    /// Used by the `ClassgraphIndex` tests, which need to assert that
+    /// `extends` / `implements` edges are followed transitively. All names
+    /// passed in are JVM **internal** form (slash-separated); the parser
+    /// converts them to dotted FQCNs on the way out.
+    pub(crate) fn build_class_with_hierarchy(
+        internal_name: &str,
+        super_internal: &str,
+        interface_internals: &[&str],
+        annotations: &[(&str, &[(&'static str, Val)])],
+    ) -> Vec<u8> {
         let mut pool = Pool::new();
 
         // Constants referenced structurally.
         let this_class = pool.class(internal_name);
-        let super_class = pool.class("java/lang/Object");
-        let rva = pool.utf8("RuntimeVisibleAnnotations");
-        let ann_desc = pool.utf8(annotation_descriptor);
+        let super_class = pool.class(super_internal);
+        let interface_indices: Vec<u16> =
+            interface_internals.iter().map(|n| pool.class(n)).collect();
 
-        // Encode the single annotation's element_value_pairs first, since that
-        // is what interns the bulk of the constants.
-        let mut ann_body = Vec::new();
-        ann_body.extend_from_slice(&ann_desc.to_be_bytes());
-        ann_body.extend_from_slice(&(elements.len() as u16).to_be_bytes());
-        for (name, val) in elements {
-            let name_idx = pool.utf8(name);
-            ann_body.extend_from_slice(&name_idx.to_be_bytes());
-            encode_value(&mut pool, &mut ann_body, val);
-        }
-
-        // RuntimeVisibleAnnotations attribute body: num_annotations + bodies.
+        // Pre-intern the RuntimeVisibleAnnotations attribute name only when
+        // we actually have annotations to emit; otherwise the file should
+        // not carry an empty RVA attribute at all (the parser tolerates one,
+        // but it's cleaner to omit).
         let mut rva_body = Vec::new();
-        rva_body.extend_from_slice(&1u16.to_be_bytes());
-        rva_body.extend_from_slice(&ann_body);
+        if !annotations.is_empty() {
+            rva_body.extend_from_slice(&(annotations.len() as u16).to_be_bytes());
+            for (descriptor, elements) in annotations {
+                let ann_desc = pool.utf8(descriptor);
+                rva_body.extend_from_slice(&ann_desc.to_be_bytes());
+                rva_body.extend_from_slice(&(elements.len() as u16).to_be_bytes());
+                for (name, val) in *elements {
+                    let name_idx = pool.utf8(name);
+                    rva_body.extend_from_slice(&name_idx.to_be_bytes());
+                    encode_value(&mut pool, &mut rva_body, val);
+                }
+            }
+        }
+        let rva_name = if !rva_body.is_empty() {
+            Some(pool.utf8("RuntimeVisibleAnnotations"))
+        } else {
+            None
+        };
 
         // Assemble the file.
         let mut file = Vec::new();
@@ -1098,13 +1217,19 @@ pub(crate) mod test_builder {
         file.extend_from_slice(&0x0021u16.to_be_bytes()); // access_flags: public super
         file.extend_from_slice(&this_class.to_be_bytes());
         file.extend_from_slice(&super_class.to_be_bytes());
-        file.extend_from_slice(&0u16.to_be_bytes()); // interfaces_count
+        file.extend_from_slice(&(interface_indices.len() as u16).to_be_bytes());
+        for idx in &interface_indices {
+            file.extend_from_slice(&idx.to_be_bytes());
+        }
         file.extend_from_slice(&0u16.to_be_bytes()); // fields_count
         file.extend_from_slice(&0u16.to_be_bytes()); // methods_count
-        file.extend_from_slice(&1u16.to_be_bytes()); // attributes_count
-        file.extend_from_slice(&rva.to_be_bytes()); // attribute name index
-        file.extend_from_slice(&(rva_body.len() as u32).to_be_bytes());
-        file.extend_from_slice(&rva_body);
+        let attribute_count: u16 = if rva_name.is_some() { 1 } else { 0 };
+        file.extend_from_slice(&attribute_count.to_be_bytes());
+        if let Some(rva) = rva_name {
+            file.extend_from_slice(&rva.to_be_bytes());
+            file.extend_from_slice(&(rva_body.len() as u32).to_be_bytes());
+            file.extend_from_slice(&rva_body);
+        }
 
         file
     }

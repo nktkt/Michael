@@ -23,6 +23,11 @@ tomcatrs-core.workspace = true
 tomcatrs-config.workspace = true
 tomcatrs-coyote.workspace = true
 tomcatrs-session.workspace = true
+# `tomcatrs-webapp` is consumed only by `sci.rs` for `ClassgraphIndex` —
+# the Servlet 6 `@HandlesTypes` classpath scan. The webapp crate brings
+# in the existing class-file parser so the bridge does not re-implement
+# JVM bytecode parsing.
+tomcatrs-webapp.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 dashmap.workspace = true

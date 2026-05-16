@@ -244,9 +244,24 @@ impl RequestHandle {
             .header("x-forwarded-proto")
             .map(str::to_owned)
             .unwrap_or_else(|| "http".to_string());
+        // The Servlet spec is explicit: `getRequestURI()` returns the path
+        // portion only — no query string. Coyote's `Request.uri` carries
+        // the raw request target (may include `?query`), and `Request.path`
+        // is the already-normalised path component. Prefer the normalised
+        // path here so `HttpServletRequest.getRequestURI()` returns
+        // `/hello` rather than `/hello?name=Spring` (the latter routes to
+        // a "no static resource hello?name=Spring" 404 in Spring MVC).
+        let path_only = if !req.path.is_empty() {
+            req.path.clone()
+        } else {
+            // Fall back to splitting the raw URI on the first `?` so the
+            // facade still behaves correctly for callers that build a
+            // Request without setting `path` (unit tests, JNI tests).
+            req.uri.split('?').next().unwrap_or(&req.uri).to_string()
+        };
         let parts = RequestParts {
             method: req.method.clone(),
-            uri: req.uri.clone(),
+            uri: path_only,
             query: req.query.clone(),
             protocol: req.version.clone(),
             headers: req.headers.clone(),
@@ -488,7 +503,10 @@ mod tests {
         let req = RequestHandle::from_coyote(&coyote_request());
 
         assert_eq!(req.method(), "POST");
-        assert_eq!(req.request_uri(), "/app/submit?id=7");
+        // Servlet spec: getRequestURI() returns the path component only —
+        // no query string. (Spring MVC routes the full string verbatim,
+        // and treats `/path?query` as a literal pattern → 404.)
+        assert_eq!(req.request_uri(), "/app/submit");
         assert_eq!(req.query_string(), Some("id=7"));
         assert_eq!(req.protocol(), "HTTP/1.1");
         assert_eq!(req.remote_addr(), "203.0.113.7:54321");

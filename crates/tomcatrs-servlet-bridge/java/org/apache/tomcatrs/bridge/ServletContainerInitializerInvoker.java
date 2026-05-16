@@ -187,9 +187,9 @@ public final class ServletContainerInitializerInvoker {
      * Read the {@code @HandlesTypes} annotation off an SCI class, returning
      * its {@code value()} array if present and a zero-length array otherwise.
      *
-     * <p>Used by the Rust side to drive the (still-degraded) types-of-interest
-     * scan. Built against the bridge stub annotation; production builds with
-     * the real {@code jakarta.servlet-api} jar pick up the real annotation
+     * <p>Used by the Rust side to drive the types-of-interest scan. Built
+     * against the bridge stub annotation; production builds with the real
+     * {@code jakarta.servlet-api} jar pick up the real annotation
      * automatically because the simple name + package match.
      *
      * @param sciClass the SCI class (or any other class) to read.
@@ -206,5 +206,35 @@ public final class ServletContainerInitializerInvoker {
         }
         Class<?>[] value = annotation.value();
         return (value == null) ? new Class<?>[0] : value;
+    }
+
+    /**
+     * Read the {@code @HandlesTypes} annotation off an SCI class and
+     * return the {@link Class#getName() class names} of its
+     * {@code value()} array as a {@code String[]}.
+     *
+     * <p>This is the FQCN-driven entry point the Rust side uses: the
+     * names returned here are in the dotted form
+     * (e.g. {@code "org.springframework.web.WebApplicationInitializer"}),
+     * matching {@code java.lang.Class.getName()} and the FQCN format used
+     * by the Rust-side {@code ClassgraphIndex}. SCIs that declare no
+     * {@code @HandlesTypes}, or whose {@code value()} array is empty,
+     * yield a zero-length result.
+     *
+     * @param sciClass the SCI class (or any other class) to read.
+     * @return the dotted FQCN of every class in
+     *         {@code @HandlesTypes(value = …)}, or a zero-length array
+     *         if the annotation is absent.
+     */
+    public static String[] readHandlesTypeNames(Class<?> sciClass) {
+        Class<?>[] classes = readHandlesTypes(sciClass);
+        if (classes.length == 0) {
+            return new String[0];
+        }
+        String[] names = new String[classes.length];
+        for (int i = 0; i < classes.length; i++) {
+            names[i] = (classes[i] == null) ? "" : classes[i].getName();
+        }
+        return names;
     }
 }

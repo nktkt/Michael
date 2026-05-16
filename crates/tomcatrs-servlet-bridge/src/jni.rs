@@ -32,7 +32,9 @@
 //! are always compiled — the tables are the canonical reference for what the
 //! Java side declares.
 
-use std::sync::OnceLock;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use dashmap::DashMap;
 
@@ -79,6 +81,35 @@ pub const NATIVE_RESPONSE_METHODS: &[(&str, &str)] = &[
     ("nativeFlush", "(J)V"),
     ("nativeCommit", "(J)Z"),
     ("nativeIsCommitted", "(J)Z"),
+];
+
+/// The JNI method registration table for the servlet-context facade. Keyed by
+/// a `nativeContextId` from the [`ContextEntry`] registry, one entry per
+/// deployed web application.
+pub const NATIVE_SERVLET_CONTEXT_METHODS: &[(&str, &str)] = &[
+    ("nativeLookupContextId", "(Ljava/lang/String;)J"),
+    (
+        "nativeGetRealPath",
+        "(JLjava/lang/String;)Ljava/lang/String;",
+    ),
+    (
+        "nativeGetResourcePaths",
+        "(JLjava/lang/String;)[Ljava/lang/String;",
+    ),
+    ("nativeOpenResource", "(JLjava/lang/String;)[B"),
+    ("nativeGetServerInfo", "(J)Ljava/lang/String;"),
+    ("nativeGetContextPath", "(J)Ljava/lang/String;"),
+    ("nativeGetServletContextName", "(J)Ljava/lang/String;"),
+    (
+        "nativeGetInitParameter",
+        "(JLjava/lang/String;)Ljava/lang/String;",
+    ),
+    ("nativeGetInitParameterNames", "(J)[Ljava/lang/String;"),
+    ("nativeLog", "(JLjava/lang/String;)V"),
+    (
+        "nativeRegisterServlet",
+        "(JLjava/lang/String;Ljava/lang/String;Ljakarta/servlet/Servlet;)V",
+    ),
 ];
 
 // ---------------------------------------------------------------------------
@@ -280,10 +311,243 @@ pub fn unregister_response(id: i64) -> Option<ResponseEntry> {
 }
 
 // ---------------------------------------------------------------------------
+// Per-context registry — one ContextEntry per deployed web application.
+// ---------------------------------------------------------------------------
+
+/// The immutable per-context state the Java [`TomcatRsServletContext`] facade
+/// pulls from the Rust side over JNI.
+///
+/// Lives in the process-global [`CONTEXT_REGISTRY`] under its
+/// `nativeContextId`. A second by-path index is kept so the SCI driver, which
+/// only knows the context path, can resolve the id.
+#[derive(Debug, Clone)]
+pub struct ContextEntry {
+    /// The webapp's context path, e.g. `"/myapp"`. Empty string for the
+    /// default (ROOT) context.
+    pub context_path: String,
+    /// Filesystem location of the exploded WAR root, used by
+    /// `getRealPath` / `getResource*`. `None` means resource access is
+    /// disabled.
+    pub doc_base: Option<PathBuf>,
+    /// Value returned by `getServerInfo()`; defaults to the bridge build tag.
+    pub server_info: String,
+    /// `web.xml` `<context-param>` map, in declaration order.
+    pub context_init_params: Vec<(String, String)>,
+    /// Value returned by `getServletContextName()`; the
+    /// `<display-name>` from `web.xml`, or the context path with the leading
+    /// `/` stripped if none is set.
+    pub servlet_context_name: String,
+}
+
+impl ContextEntry {
+    /// Build a minimal context entry for tests / call sites that do not yet
+    /// have a parsed `web.xml`. Defaults the server info to the standard
+    /// bridge tag and derives a sensible servlet context name from the path.
+    pub fn minimal(context_path: impl Into<String>) -> Self {
+        let path: String = context_path.into();
+        let name = path.trim_start_matches('/').to_owned();
+        Self {
+            context_path: path,
+            doc_base: None,
+            server_info: "Tomcat-RS Compatibility Runtime".to_owned(),
+            context_init_params: Vec::new(),
+            servlet_context_name: name,
+        }
+    }
+
+    /// Look up a `<context-param>` value by name.
+    pub fn init_param(&self, name: &str) -> Option<&str> {
+        self.context_init_params
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// All `<context-param>` names, in declaration order.
+    pub fn init_param_names(&self) -> Vec<String> {
+        self.context_init_params
+            .iter()
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
+    /// Resolve a relative `path` (e.g. `"/WEB-INF/web.xml"`) against
+    /// [`Self::doc_base`]. Returns `None` if no doc base is configured.
+    ///
+    /// Pure-Rust logic — no JNI — so it is unit-testable on hosts with no JDK.
+    pub fn real_path(&self, path: &str) -> Option<PathBuf> {
+        let base = self.doc_base.as_ref()?;
+        // Strip a leading `/` so `Path::join` doesn't reset to the root.
+        let trimmed = path.trim_start_matches('/');
+        Some(base.join(trimmed))
+    }
+
+    /// Enumerate the immediate children of `path` under [`Self::doc_base`],
+    /// returning each as an absolute-from-context-root string (e.g.
+    /// `"/WEB-INF/web.xml"`, `"/WEB-INF/classes/"` — trailing slash for
+    /// directories, matching the Servlet API contract).
+    ///
+    /// Returns an empty `Vec` when no doc base is configured, or when the
+    /// resolved directory does not exist / is not a directory.
+    pub fn resource_paths(&self, path: &str) -> Vec<String> {
+        let Some(base) = self.doc_base.as_ref() else {
+            return Vec::new();
+        };
+        let trimmed = path.trim_start_matches('/');
+        let dir = base.join(trimmed);
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let prefix = if path.is_empty() || !path.starts_with('/') {
+            format!("/{}", path.trim_end_matches('/'))
+        } else {
+            path.trim_end_matches('/').to_owned()
+        };
+        for entry in entries.flatten() {
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                out.push(format!("{prefix}/{name}/"));
+            } else {
+                out.push(format!("{prefix}/{name}"));
+            }
+        }
+        out.sort();
+        out
+    }
+}
+
+/// Process-global registry of deployed web applications' context entries.
+///
+/// Keyed by `nativeContextId` (a monotonic `i64`); a secondary by-path index
+/// supports the legacy `TomcatRsServletContext(String)` constructor.
+#[derive(Debug, Default)]
+pub struct ContextRegistry {
+    entries: DashMap<i64, ContextEntry>,
+    by_path: DashMap<String, i64>,
+}
+
+impl ContextRegistry {
+    /// Register `entry` under a freshly-allocated `nativeContextId`. The
+    /// secondary by-path index is updated to point at the new id, replacing
+    /// any previous registration for the same path.
+    pub fn register(&self, entry: ContextEntry) -> i64 {
+        static NEXT_ID: AtomicI64 = AtomicI64::new(1);
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let path = entry.context_path.clone();
+        self.entries.insert(id, entry);
+        self.by_path.insert(path, id);
+        id
+    }
+
+    /// Remove and return the entry registered under `id`, if any. Also
+    /// removes the by-path index entry pointing at it.
+    pub fn unregister(&self, id: i64) -> Option<ContextEntry> {
+        let entry = self.entries.remove(&id).map(|(_, e)| e)?;
+        // Drop the by-path index only if it still points at this id —
+        // a later registration for the same path may have replaced it.
+        if let Some(current) = self.by_path.get(&entry.context_path) {
+            if *current.value() == id {
+                drop(current);
+                self.by_path.remove(&entry.context_path);
+            }
+        }
+        Some(entry)
+    }
+
+    /// Look the `id` up, returning a clone of its entry.
+    pub fn lookup(&self, id: i64) -> Option<ContextEntry> {
+        self.entries.get(&id).map(|e| e.clone())
+    }
+
+    /// Resolve a context path to its current `nativeContextId`, or `0` if
+    /// nothing has been registered for that path.
+    pub fn lookup_id_for_path(&self, context_path: &str) -> i64 {
+        self.by_path
+            .get(context_path)
+            .map(|v| *v.value())
+            .unwrap_or(0)
+    }
+
+    /// Number of registered contexts. Mainly for diagnostics/tests.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the registry holds no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// Backing storage for [`context_registry`].
+static CONTEXT_REGISTRY: OnceLock<ContextRegistry> = OnceLock::new();
+
+/// Secondary registry mapping `nativeContextId` → the `WebappRuntime`
+/// (held weakly so dropping the runtime doesn't leak). Set by
+/// `registration::WebappRegistrar` after a webapp's `Arc<WebappRuntime>`
+/// exists, and read by the NativeServletContext JNI shims when the Java
+/// side dynamically registers a servlet via `ctx.addServlet(...)` — that
+/// call has to land in the **Rust** `WebappRuntime` registry so the
+/// connector mapper can route incoming requests to it.
+static WEBAPP_REGISTRY: OnceLock<DashMap<i64, std::sync::Weak<crate::jvm::WebappRuntime>>> =
+    OnceLock::new();
+
+fn webapp_registry() -> &'static DashMap<i64, std::sync::Weak<crate::jvm::WebappRuntime>> {
+    WEBAPP_REGISTRY.get_or_init(DashMap::new)
+}
+
+/// Attach a `WebappRuntime` to the previously-registered context entry
+/// under `native_context_id`. Called once per webapp after its
+/// `Arc<WebappRuntime>` has been built.
+pub fn attach_webapp(native_context_id: i64, webapp: std::sync::Weak<crate::jvm::WebappRuntime>) {
+    webapp_registry().insert(native_context_id, webapp);
+}
+
+/// Drop the webapp attachment for a context. Called on undeploy. Safe to
+/// call when no attachment exists.
+pub fn detach_webapp(native_context_id: i64) -> Option<std::sync::Weak<crate::jvm::WebappRuntime>> {
+    webapp_registry().remove(&native_context_id).map(|(_, w)| w)
+}
+
+/// Look up and upgrade the `WebappRuntime` for `native_context_id`.
+pub fn lookup_webapp(native_context_id: i64) -> Option<Arc<crate::jvm::WebappRuntime>> {
+    webapp_registry()
+        .get(&native_context_id)
+        .and_then(|w| w.value().upgrade())
+}
+
+/// The process-global [`ContextRegistry`], created on first access.
+pub fn context_registry() -> &'static ContextRegistry {
+    CONTEXT_REGISTRY.get_or_init(ContextRegistry::default)
+}
+
+/// Register a [`ContextEntry`] in the process-global registry, returning its
+/// fresh `nativeContextId`.
+pub fn register_context(entry: ContextEntry) -> i64 {
+    context_registry().register(entry)
+}
+
+/// Remove the context entry under `id` from the process-global registry.
+pub fn unregister_context(id: i64) -> Option<ContextEntry> {
+    context_registry().unregister(id)
+}
+
+/// Look the context entry up under `id`, returning a clone.
+pub fn lookup_context(id: i64) -> Option<ContextEntry> {
+    context_registry().lookup(id)
+}
+
+// ---------------------------------------------------------------------------
 // Real JNI entry points — only compiled with `--features jvm`.
 // ---------------------------------------------------------------------------
 #[cfg(feature = "jvm")]
-pub use imp::{register_native_methods, request_bindings, response_bindings, NativeBinding};
+pub use imp::{
+    context_bindings, register_native_methods, request_bindings, response_bindings, NativeBinding,
+};
 
 #[cfg(feature = "jvm")]
 mod imp {
@@ -303,7 +567,7 @@ mod imp {
     use jni::sys::{jboolean, jint, jlong, JNI_FALSE};
     use jni::JNIEnv;
 
-    use super::{registry, RequestEntry, ResponseEntry};
+    use super::{context_registry, registry, ContextEntry, RequestEntry, ResponseEntry};
 
     /// Throw a `java.io.IOException` carrying `msg`. Best-effort: if the JVM
     /// rejects the throw (e.g. an exception is already pending) the error is
@@ -354,6 +618,11 @@ mod imp {
     /// Resolve a `nativeResponseId` to its registered [`ResponseEntry`].
     fn lookup_response(id: jlong) -> Option<ResponseEntry> {
         registry().lookup_response(id)
+    }
+
+    /// Resolve a `nativeContextId` to its registered [`ContextEntry`] (cloned).
+    fn lookup_context(id: jlong) -> Option<ContextEntry> {
+        context_registry().lookup(id)
     }
 
     /// Build a Java `String`, falling back to an empty one (then, if even that
@@ -839,6 +1108,335 @@ mod imp {
         )
     }
 
+    // -- NativeServletContext ----------------------------------------------
+
+    /// `NativeServletContext.nativeLookupContextId(String) -> long`
+    ///
+    /// Resolves a context path to its registered `nativeContextId`, or `0`
+    /// when nothing has been registered for that path. Used by the legacy
+    /// `TomcatRsServletContext(String)` constructor so the SCI driver call
+    /// site keeps working.
+    #[no_mangle]
+    pub extern "system" fn Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeLookupContextId<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        path: JString<'local>,
+    ) -> jlong {
+        guard(&mut env, "nativeLookupContextId", 0, |env| {
+            let path = rust_string(env, &path);
+            context_registry().lookup_id_for_path(&path)
+        })
+    }
+
+    /// `NativeServletContext.nativeGetRealPath(long, String) -> String`
+    #[no_mangle]
+    pub extern "system" fn Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeGetRealPath<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        context_id: jlong,
+        path: JString<'local>,
+    ) -> JString<'local> {
+        let default = JString::from(jni::objects::JObject::null());
+        guard(&mut env, "nativeGetRealPath", default, |env| {
+            let path = rust_string(env, &path);
+            match lookup_context(context_id).and_then(|c| c.real_path(&path)) {
+                Some(p) => java_string(env, &p.display().to_string()),
+                None => JString::from(jni::objects::JObject::null()),
+            }
+        })
+    }
+
+    /// `NativeServletContext.nativeGetResourcePaths(long, String) -> String[]`
+    #[no_mangle]
+    pub extern "system" fn Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeGetResourcePaths<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        context_id: jlong,
+        path: JString<'local>,
+    ) -> JObjectArray<'local> {
+        let default = JObjectArray::from(jni::objects::JObject::null());
+        guard(&mut env, "nativeGetResourcePaths", default, |env| {
+            let path = rust_string(env, &path);
+            let entries = lookup_context(context_id)
+                .map(|c| c.resource_paths(&path))
+                .unwrap_or_default();
+            let string_class = match env.find_class("java/lang/String") {
+                Ok(c) => c,
+                Err(e) => {
+                    throw_io(env, &format!("cannot resolve java/lang/String: {e}"));
+                    return JObjectArray::from(jni::objects::JObject::null());
+                }
+            };
+            let empty = match env.new_string("") {
+                Ok(s) => s,
+                Err(e) => {
+                    throw_io(env, &format!("cannot allocate placeholder string: {e}"));
+                    return JObjectArray::from(jni::objects::JObject::null());
+                }
+            };
+            let array = match env.new_object_array(entries.len() as jint, &string_class, &empty) {
+                Ok(a) => a,
+                Err(e) => {
+                    throw_io(env, &format!("cannot allocate String[]: {e}"));
+                    return JObjectArray::from(jni::objects::JObject::null());
+                }
+            };
+            for (i, name) in entries.iter().enumerate() {
+                let jname = java_string(env, name);
+                if let Err(e) = env.set_object_array_element(&array, i as jint, &jname) {
+                    throw_io(env, &format!("cannot populate resource-paths array: {e}"));
+                    return JObjectArray::from(jni::objects::JObject::null());
+                }
+            }
+            array
+        })
+    }
+
+    /// `NativeServletContext.nativeOpenResource(long, String) -> byte[]`
+    ///
+    /// Reads the resource at `path` (resolved under the context's
+    /// `doc_base`) fully into a Java `byte[]`. Returns `null` when the
+    /// resource does not exist, the path resolves outside any configured
+    /// doc-base, or reading fails — matching the Servlet API contract for
+    /// `getResourceAsStream`. Intentionally not streamed: v1 callers
+    /// (DispatcherServlet's bootstrap) are reading small descriptor files.
+    #[no_mangle]
+    pub extern "system" fn Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeOpenResource<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        context_id: jlong,
+        path: JString<'local>,
+    ) -> JByteArray<'local> {
+        let default = JByteArray::from(jni::objects::JObject::null());
+        guard(&mut env, "nativeOpenResource", default, |env| {
+            let path = rust_string(env, &path);
+            let Some(real) = lookup_context(context_id).and_then(|c| c.real_path(&path)) else {
+                return JByteArray::from(jni::objects::JObject::null());
+            };
+            let bytes = match std::fs::read(&real) {
+                Ok(b) => b,
+                Err(_) => {
+                    return JByteArray::from(jni::objects::JObject::null());
+                }
+            };
+            let array = match env.new_byte_array(bytes.len() as jint) {
+                Ok(a) => a,
+                Err(e) => {
+                    throw_io(env, &format!("cannot allocate byte[] resource: {e}"));
+                    return JByteArray::from(jni::objects::JObject::null());
+                }
+            };
+            // Reinterpret u8 → i8 for JNI; same memory layout.
+            let signed: &[i8] =
+                unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<i8>(), bytes.len()) };
+            if let Err(e) = env.set_byte_array_region(&array, 0, signed) {
+                throw_io(env, &format!("cannot copy resource into byte[]: {e}"));
+                return JByteArray::from(jni::objects::JObject::null());
+            }
+            array
+        })
+    }
+
+    /// `NativeServletContext.nativeGetServerInfo(long) -> String`
+    #[no_mangle]
+    pub extern "system" fn Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeGetServerInfo<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        context_id: jlong,
+    ) -> JString<'local> {
+        let default = JString::from(jni::objects::JObject::null());
+        guard(&mut env, "nativeGetServerInfo", default, |env| {
+            let v = lookup_context(context_id)
+                .map(|c| c.server_info.clone())
+                .unwrap_or_else(|| "Tomcat-RS Compatibility Runtime".to_owned());
+            java_string(env, &v)
+        })
+    }
+
+    /// `NativeServletContext.nativeGetContextPath(long) -> String`
+    #[no_mangle]
+    pub extern "system" fn Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeGetContextPath<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        context_id: jlong,
+    ) -> JString<'local> {
+        let default = JString::from(jni::objects::JObject::null());
+        guard(&mut env, "nativeGetContextPath", default, |env| {
+            let v = lookup_context(context_id)
+                .map(|c| c.context_path.clone())
+                .unwrap_or_default();
+            java_string(env, &v)
+        })
+    }
+
+    /// `NativeServletContext.nativeGetServletContextName(long) -> String`
+    #[no_mangle]
+    pub extern "system" fn Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeGetServletContextName<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        context_id: jlong,
+    ) -> JString<'local> {
+        let default = JString::from(jni::objects::JObject::null());
+        guard(&mut env, "nativeGetServletContextName", default, |env| {
+            let v = lookup_context(context_id)
+                .map(|c| c.servlet_context_name.clone())
+                .unwrap_or_default();
+            java_string(env, &v)
+        })
+    }
+
+    /// `NativeServletContext.nativeGetInitParameter(long, String) -> String`
+    #[no_mangle]
+    pub extern "system" fn Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeGetInitParameter<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        context_id: jlong,
+        name: JString<'local>,
+    ) -> JString<'local> {
+        let default = JString::from(jni::objects::JObject::null());
+        guard(&mut env, "nativeGetInitParameter", default, |env| {
+            let name = rust_string(env, &name);
+            match lookup_context(context_id).and_then(|c| c.init_param(&name).map(str::to_owned)) {
+                Some(v) => java_string(env, &v),
+                None => JString::from(jni::objects::JObject::null()),
+            }
+        })
+    }
+
+    /// `NativeServletContext.nativeGetInitParameterNames(long) -> String[]`
+    #[no_mangle]
+    pub extern "system" fn Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeGetInitParameterNames<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        context_id: jlong,
+    ) -> JObjectArray<'local> {
+        let default = JObjectArray::from(jni::objects::JObject::null());
+        guard(&mut env, "nativeGetInitParameterNames", default, |env| {
+            let names = lookup_context(context_id)
+                .map(|c| c.init_param_names())
+                .unwrap_or_default();
+            let string_class = match env.find_class("java/lang/String") {
+                Ok(c) => c,
+                Err(e) => {
+                    throw_io(env, &format!("cannot resolve java/lang/String: {e}"));
+                    return JObjectArray::from(jni::objects::JObject::null());
+                }
+            };
+            let empty = match env.new_string("") {
+                Ok(s) => s,
+                Err(e) => {
+                    throw_io(env, &format!("cannot allocate placeholder string: {e}"));
+                    return JObjectArray::from(jni::objects::JObject::null());
+                }
+            };
+            let array = match env.new_object_array(names.len() as jint, &string_class, &empty) {
+                Ok(a) => a,
+                Err(e) => {
+                    throw_io(env, &format!("cannot allocate String[]: {e}"));
+                    return JObjectArray::from(jni::objects::JObject::null());
+                }
+            };
+            for (i, name) in names.iter().enumerate() {
+                let jname = java_string(env, name);
+                if let Err(e) = env.set_object_array_element(&array, i as jint, &jname) {
+                    throw_io(env, &format!("cannot populate init-param-names array: {e}"));
+                    return JObjectArray::from(jni::objects::JObject::null());
+                }
+            }
+            array
+        })
+    }
+
+    /// `NativeServletContext.nativeLog(long, String)`
+    #[no_mangle]
+    pub extern "system" fn Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeLog<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        context_id: jlong,
+        msg: JString<'local>,
+    ) {
+        guard(&mut env, "nativeLog", (), |env| {
+            let msg = rust_string(env, &msg);
+            let path = lookup_context(context_id)
+                .map(|c| c.context_path)
+                .unwrap_or_default();
+            tracing::info!(target: "tomcatrs::servlet_context", context = %path, "{msg}");
+        })
+    }
+
+    /// `NativeServletContext.nativeRegisterServlet(long, String, String, Servlet)`
+    ///
+    /// Called by `TomcatRsServletContext.addServlet(...)` when a webapp (most
+    /// notably Spring's `SpringServletContainerInitializer`) registers a
+    /// servlet dynamically. Promotes the Java-side `RegisteredServletEntry`
+    /// into the Rust `WebappRuntime.servlet_registry` so the connector mapper
+    /// can route incoming requests to it.
+    ///
+    /// Signature: `(long contextId, String servletName, String className, Servlet instance) -> void`.
+    #[no_mangle]
+    pub extern "system" fn Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeRegisterServlet<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        context_id: jlong,
+        name: JString<'local>,
+        _class_name: JString<'local>,
+        servlet: jni::objects::JObject<'local>,
+    ) {
+        guard(&mut env, "nativeRegisterServlet", (), |env| {
+            let name = rust_string(env, &name);
+            let webapp = match crate::jni::lookup_webapp(context_id) {
+                Some(w) => w,
+                None => {
+                    tracing::warn!(
+                        context_id,
+                        servlet = %name,
+                        "nativeRegisterServlet: no WebappRuntime attached for this contextId; \
+                         the dynamic registration will not be routable"
+                    );
+                    return;
+                }
+            };
+            // Promote the JObject reference (Local) to a Global so the
+            // ServletInstanceHandle can outlive this JNI frame.
+            let global = match env.new_global_ref(&servlet) {
+                Ok(g) => g,
+                Err(e) => {
+                    tracing::warn!(error = %e, "nativeRegisterServlet: new_global_ref failed");
+                    return;
+                }
+            };
+            let handle = crate::jvm::ServletInstanceHandle::new(global);
+            webapp.register_servlet(name.clone(), handle);
+            tracing::info!(
+                context_id,
+                servlet = %name,
+                "nativeRegisterServlet: dynamic servlet registered with the Rust mapper"
+            );
+        })
+    }
+
     // -- registration ------------------------------------------------------
 
     /// One row of a registration table: a Java method name, its JNI signature,
@@ -964,6 +1562,77 @@ mod imp {
         ]
     }
 
+    /// The bindings table for `org.apache.tomcatrs.bridge.NativeServletContext`.
+    ///
+    /// Mirrors the [`super::NATIVE_SERVLET_CONTEXT_METHODS`] table; each
+    /// entry's signature must match exactly or RegisterNatives will fail at
+    /// JVM start-up.
+    pub fn context_bindings() -> Vec<NativeBinding> {
+        vec![
+            (
+                "nativeLookupContextId",
+                "(Ljava/lang/String;)J",
+                Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeLookupContextId
+                    as *mut _,
+            ),
+            (
+                "nativeGetRealPath",
+                "(JLjava/lang/String;)Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeGetRealPath as *mut _,
+            ),
+            (
+                "nativeGetResourcePaths",
+                "(JLjava/lang/String;)[Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeGetResourcePaths
+                    as *mut _,
+            ),
+            (
+                "nativeOpenResource",
+                "(JLjava/lang/String;)[B",
+                Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeOpenResource as *mut _,
+            ),
+            (
+                "nativeGetServerInfo",
+                "(J)Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeGetServerInfo as *mut _,
+            ),
+            (
+                "nativeGetContextPath",
+                "(J)Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeGetContextPath as *mut _,
+            ),
+            (
+                "nativeGetServletContextName",
+                "(J)Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeGetServletContextName
+                    as *mut _,
+            ),
+            (
+                "nativeGetInitParameter",
+                "(JLjava/lang/String;)Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeGetInitParameter
+                    as *mut _,
+            ),
+            (
+                "nativeGetInitParameterNames",
+                "(J)[Ljava/lang/String;",
+                Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeGetInitParameterNames
+                    as *mut _,
+            ),
+            (
+                "nativeLog",
+                "(JLjava/lang/String;)V",
+                Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeLog as *mut _,
+            ),
+            (
+                "nativeRegisterServlet",
+                "(JLjava/lang/String;Ljava/lang/String;Ljakarta/servlet/Servlet;)V",
+                Java_org_apache_tomcatrs_bridge_NativeServletContext_nativeRegisterServlet
+                    as *mut _,
+            ),
+        ]
+    }
+
     /// Convert a [`NativeBinding`] table into the `jni::NativeMethod` form
     /// `JNIEnv::register_native_methods` expects.
     pub(crate) fn to_native_methods(bindings: &[NativeBinding]) -> Vec<jni::NativeMethod> {
@@ -996,7 +1665,7 @@ mod imp {
         // used by other call sites that pattern-match registration results.
         let _ = JValue::Void;
 
-        let groups: [(&str, Vec<NativeBinding>); 4] = [
+        let groups: [(&str, Vec<NativeBinding>); 5] = [
             (
                 "org/apache/tomcatrs/bridge/NativeRequest",
                 request_bindings(),
@@ -1012,6 +1681,10 @@ mod imp {
             (
                 "org/apache/tomcatrs/bridge/NativeAsyncContext",
                 crate::async_servlet::async_context_bindings(),
+            ),
+            (
+                "org/apache/tomcatrs/bridge/NativeServletContext",
+                context_bindings(),
             ),
         ];
 
@@ -1033,7 +1706,8 @@ mod imp {
         tracing::debug!(
             request_natives = super::NATIVE_REQUEST_METHODS.len(),
             response_natives = super::NATIVE_RESPONSE_METHODS.len(),
-            "bridge native methods registered on all four facade classes"
+            context_natives = super::NATIVE_SERVLET_CONTEXT_METHODS.len(),
+            "bridge native methods registered on all facade classes"
         );
         Ok(())
     }
@@ -1057,7 +1731,11 @@ mod tests {
 
     #[test]
     fn registration_tables_are_non_empty_and_well_formed() {
-        for (name, sig) in NATIVE_REQUEST_METHODS.iter().chain(NATIVE_RESPONSE_METHODS) {
+        for (name, sig) in NATIVE_REQUEST_METHODS
+            .iter()
+            .chain(NATIVE_RESPONSE_METHODS)
+            .chain(NATIVE_SERVLET_CONTEXT_METHODS)
+        {
             assert!(name.starts_with("native"), "bad native name: {name}");
             assert!(sig.starts_with('('), "bad JNI signature: {sig}");
         }
@@ -1068,6 +1746,129 @@ mod tests {
         assert!(NATIVE_RESPONSE_METHODS
             .iter()
             .any(|(n, _)| *n == "nativeWriteBody"));
+        assert!(NATIVE_SERVLET_CONTEXT_METHODS
+            .iter()
+            .any(|(n, _)| *n == "nativeGetRealPath"));
+        assert!(NATIVE_SERVLET_CONTEXT_METHODS
+            .iter()
+            .any(|(n, _)| *n == "nativeLookupContextId"));
+    }
+
+    #[test]
+    fn context_registry_round_trip_with_path_index() {
+        let reg = ContextRegistry::default();
+        assert!(reg.is_empty());
+        assert_eq!(reg.lookup_id_for_path("/missing"), 0);
+
+        let entry = ContextEntry::minimal("/app");
+        let id = reg.register(entry.clone());
+        assert!(id > 0);
+        assert_eq!(reg.len(), 1);
+        let got = reg.lookup(id).expect("just registered");
+        assert_eq!(got.context_path, "/app");
+        assert_eq!(reg.lookup_id_for_path("/app"), id);
+
+        let removed = reg.unregister(id).expect("present");
+        assert_eq!(removed.context_path, "/app");
+        assert!(reg.is_empty());
+        assert_eq!(reg.lookup_id_for_path("/app"), 0);
+    }
+
+    #[test]
+    fn context_entry_minimal_derives_sensible_defaults() {
+        let e = ContextEntry::minimal("/shop");
+        assert_eq!(e.context_path, "/shop");
+        assert_eq!(e.servlet_context_name, "shop");
+        assert!(e.server_info.contains("Tomcat-RS"));
+        assert!(e.context_init_params.is_empty());
+        assert!(e.init_param("missing").is_none());
+        assert!(e.init_param_names().is_empty());
+        assert!(e.doc_base.is_none());
+        assert!(e.real_path("/anything").is_none());
+        assert!(e.resource_paths("/").is_empty());
+    }
+
+    #[test]
+    fn context_entry_real_path_joins_under_doc_base() {
+        let mut e = ContextEntry::minimal("/app");
+        e.doc_base = Some(PathBuf::from("/srv/app"));
+        // Leading slash stripped so `join` stays under doc_base.
+        let p = e.real_path("/WEB-INF/web.xml").expect("doc base set");
+        assert_eq!(p, PathBuf::from("/srv/app/WEB-INF/web.xml"));
+        // A bare relative path also works.
+        let p2 = e.real_path("index.html").expect("doc base set");
+        assert_eq!(p2, PathBuf::from("/srv/app/index.html"));
+    }
+
+    #[test]
+    fn context_entry_resource_paths_lists_directory() {
+        let tmp = tempfile_dir_for_test();
+        let sub = tmp.join("WEB-INF");
+        std::fs::create_dir_all(&sub).expect("mkdir WEB-INF");
+        std::fs::write(sub.join("web.xml"), "").expect("write web.xml");
+        std::fs::create_dir_all(sub.join("classes")).expect("mkdir classes");
+
+        let mut e = ContextEntry::minimal("/app");
+        e.doc_base = Some(tmp.clone());
+        let paths = e.resource_paths("/WEB-INF");
+        assert!(
+            paths.contains(&"/WEB-INF/web.xml".to_owned()),
+            "expected /WEB-INF/web.xml in {paths:?}"
+        );
+        assert!(
+            paths.contains(&"/WEB-INF/classes/".to_owned()),
+            "expected /WEB-INF/classes/ in {paths:?}"
+        );
+
+        // Cleanup.
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn context_entry_init_params_resolve_by_name() {
+        let mut e = ContextEntry::minimal("/app");
+        e.context_init_params = vec![
+            ("a".to_owned(), "1".to_owned()),
+            ("b".to_owned(), "2".to_owned()),
+        ];
+        assert_eq!(e.init_param("a"), Some("1"));
+        assert_eq!(e.init_param("missing"), None);
+        assert_eq!(e.init_param_names(), vec!["a".to_owned(), "b".to_owned()]);
+    }
+
+    /// A unique temporary directory under the OS tempdir, created lazily.
+    /// Caller is responsible for cleanup. Avoids pulling in the `tempfile`
+    /// crate just for two filesystem tests.
+    fn tempfile_dir_for_test() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("tomcatrs-jni-test-{pid}-{n}"));
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        dir
+    }
+
+    #[test]
+    fn process_global_context_registry_round_trip() {
+        let entry = ContextEntry::minimal("/process-global-test");
+        let id = register_context(entry);
+        assert!(id > 0);
+        let got = lookup_context(id).expect("just registered");
+        assert_eq!(got.context_path, "/process-global-test");
+        assert_eq!(
+            context_registry().lookup_id_for_path("/process-global-test"),
+            id
+        );
+
+        let removed = unregister_context(id).expect("present");
+        assert_eq!(removed.context_path, "/process-global-test");
+        assert!(lookup_context(id).is_none());
+        // Path index is dropped too.
+        assert_eq!(
+            context_registry().lookup_id_for_path("/process-global-test"),
+            0
+        );
     }
 
     fn sample_request() -> RequestHandle {
