@@ -38,7 +38,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Cache cargo registry / target
-        uses: Swatinem/rust-cache@v2.7.3
+        uses: Swatinem/rust-cache@v2.9.1
         with:
           shared-key: fmt
       - name: cargo fmt --all --check
@@ -51,7 +51,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Cache cargo registry / target
-        uses: Swatinem/rust-cache@v2.7.3
+        uses: Swatinem/rust-cache@v2.9.1
         with:
           shared-key: clippy
       # Non-blocking: see top-of-file note. We still surface the warnings
@@ -76,7 +76,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Cache cargo registry / target
-        uses: Swatinem/rust-cache@v2.7.3
+        uses: Swatinem/rust-cache@v2.9.1
         with:
           shared-key: build-${{ matrix.os }}
       - name: cargo build --workspace
@@ -94,7 +94,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Cache cargo registry / target
-        uses: Swatinem/rust-cache@v2.7.3
+        uses: Swatinem/rust-cache@v2.9.1
         with:
           shared-key: test-${{ matrix.os }}
       - name: cargo test --workspace
@@ -113,7 +113,7 @@ jobs:
           distribution: temurin
           java-version: "21"
       - name: Cache cargo registry / target
-        uses: Swatinem/rust-cache@v2.7.3
+        uses: Swatinem/rust-cache@v2.9.1
         with:
           shared-key: test-jvm
       - name: cargo test -p tomcatrs-servlet-bridge --features jvm
@@ -127,7 +127,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Cache cargo registry / target
-        uses: Swatinem/rust-cache@v2.7.3
+        uses: Swatinem/rust-cache@v2.9.1
         with:
           shared-key: build-coyote-no-default
       # Proves the `tls` Cargo feature on tomcatrs-coyote is honestly optional:
