@@ -1642,7 +1642,7 @@ dependencies = [
  "dashmap",
  "parking_lot",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tomcatrs-config",
  "tomcatrs-core",
@@ -1691,7 +1691,7 @@ version = "1.0.0"
 dependencies = [
  "quick-xml",
  "serde",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tomcatrs-core",
  "tracing",
 ]
@@ -1701,7 +1701,7 @@ name = "tomcatrs-core"
 version = "1.0.0"
 dependencies = [
  "async-trait",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
@@ -1716,7 +1716,7 @@ dependencies = [
  "rustls",
  "rustls-pemfile",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
  "tomcatrs-config",
@@ -1730,7 +1730,7 @@ version = "1.0.0"
 dependencies = [
  "jni",
  "quick-xml",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tomcatrs-core",
  "tomcatrs-servlet-bridge",
  "tracing",
@@ -1748,7 +1748,7 @@ dependencies = [
  "once_cell",
  "parking_lot",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tomcatrs-core",
  "tomcatrs-coyote",
@@ -1767,7 +1767,7 @@ dependencies = [
  "quick-xml",
  "rand",
  "sha2",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tomcatrs-config",
  "tomcatrs-core",
@@ -1782,7 +1782,7 @@ dependencies = [
  "bytes",
  "dashmap",
  "jni",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tomcatrs-config",
  "tomcatrs-core",
@@ -1803,7 +1803,7 @@ dependencies = [
  "redis",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tomcatrs-core",
  "tracing",
@@ -1826,7 +1826,7 @@ name = "tomcatrs-webapp"
 version = "1.0.0"
 dependencies = [
  "quick-xml",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tomcatrs-core",
  "tracing",
  "zip",
@@ -1840,7 +1840,7 @@ dependencies = [
  "bytes",
  "flate2",
  "sha1",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tomcatrs-core",
  "tracing",
