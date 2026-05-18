@@ -39,7 +39,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Cache cargo registry / target
-        uses: Swatinem/rust-cache@v2.7.3
+        uses: Swatinem/rust-cache@v2.9.1
         with:
           shared-key: audit
           # cargo-audit is the only cargo install on this job; make sure
@@ -59,7 +59,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Cache cargo registry / target
-        uses: Swatinem/rust-cache@v2.7.3
+        uses: Swatinem/rust-cache@v2.9.1
         with:
           shared-key: deny
           cache-bin: "true"
