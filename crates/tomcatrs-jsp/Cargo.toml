@@ -27,7 +27,7 @@ quick-xml.workspace = true
 # inside `WEB-INF/lib/*.jar` archives (a jar is a zip). `deflate` is required
 # because jar entries are commonly DEFLATE-compressed; the other default
 # features (encryption, bzip2, zstd, …) are not needed here.
-zip = { version = "2.2", default-features = false, features = ["deflate"] }
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
 # Only linked under `--features jvm`; the version matches the servlet bridge's
 # so a single `jni` build is shared across the workspace.
 jni = { version = "0.21", optional = true, features = ["invocation"] }
